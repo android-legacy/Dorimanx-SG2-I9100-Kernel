@@ -141,9 +141,6 @@ void efi_sync_low_kernel_mappings(void)
 
 int efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 {
-	unsigned long text;
-	struct page *page;
-	unsigned npages;
 	pgd_t *pgd;
 
 	if (efi_enabled(EFI_OLD_MEMMAP))
@@ -165,29 +162,6 @@ int efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 
 	efi_scratch.use_pgd = true;
 
-	/*
-	 * When making calls to the firmware everything needs to be 1:1
-	 * mapped and addressable with 32-bit pointers. Map the kernel
-	 * text and allocate a new stack because we can't rely on the
-	 * stack pointer being < 4GB.
-	 */
-	if (!IS_ENABLED(CONFIG_EFI_MIXED))
-		return 0;
-
-	page = alloc_page(GFP_KERNEL|__GFP_DMA32);
-	if (!page)
-		panic("Unable to allocate EFI runtime stack < 4GB\n");
-
-	efi_scratch.phys_stack = virt_to_phys(page_address(page));
-	efi_scratch.phys_stack += PAGE_SIZE; /* stack grows down */
-
-	npages = (_end - _text) >> PAGE_SHIFT;
-	text = __pa(_text);
-
-	if (kernel_map_pages_in_pgd(pgd, text >> PAGE_SHIFT, text, npages, 0)) {
-		pr_err("Failed to map kernel text 1:1\n");
-		return 1;
-	}
 
 	return 0;
 }
