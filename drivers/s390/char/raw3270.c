@@ -799,7 +799,7 @@ struct raw3270 __init *raw3270_setup_console(void)
 	char *ascebc;
 	int rc;
 
-	cdev = ccw_device_create_console(&raw3270_ccw_driver);
+	cdev = ccw_device_probe_console(&raw3270_ccw_driver);
 	if (IS_ERR(cdev))
 		return ERR_CAST(cdev);
 

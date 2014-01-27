@@ -922,7 +922,7 @@ static int __init con3215_init(void)
 		raw3215_freelist = req;
 	}
 
-	cdev = ccw_device_create_console(&raw3215_ccw_driver);
+	cdev = ccw_device_probe_console(&raw3215_ccw_driver);
 	if (IS_ERR(cdev))
 		return -ENODEV;
 

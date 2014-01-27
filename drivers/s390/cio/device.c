@@ -1624,7 +1624,7 @@ out_unlock:
 	return rc;
 }
 
-struct ccw_device * __init ccw_device_create_console(struct ccw_driver *drv)
+struct ccw_device *ccw_device_probe_console(struct ccw_driver *drv)
 {
 	struct io_subchannel_private *io_priv;
 	struct ccw_device *cdev;
