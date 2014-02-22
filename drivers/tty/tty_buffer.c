@@ -311,18 +311,14 @@ EXPORT_SYMBOL(tty_insert_flip_string_flags);
  *	Takes any pending buffers and transfers their ownership to the
  *	ldisc side of the queue. It then schedules those characters for
  *	processing by the line discipline.
- *
- *	Locking: Takes tty->buf.lock
  */
 
 void tty_schedule_flip(struct tty_struct *tty)
 {
-	unsigned long flags;
-	spin_lock_irqsave(&tty->buf.lock, flags);
-	if (tty->buf.tail != NULL)
-		tty->buf.tail->commit = tty->buf.tail->used;
-	spin_unlock_irqrestore(&tty->buf.lock, flags);
-	schedule_work(&tty->buf.work);
+	struct tty_bufhead *buf = &port->buf;
+
+	buf->tail->commit = buf->tail->used;
+	schedule_work(&buf->work);
 }
 EXPORT_SYMBOL(tty_schedule_flip);
 
@@ -469,15 +465,15 @@ static void flush_to_ldisc(struct work_struct *work)
  */
 void tty_flush_to_ldisc(struct tty_struct *tty)
 {
-	flush_work(&tty->buf.work);
+	flush_work(&tty->port->buf.work);
 }
 
 /**
  *	tty_flip_buffer_push	-	terminal
  *	@tty: tty to push
  *
- *	Queue a push of the terminal flip buffers to the line discipline. This
- *	function must not be called from IRQ context if tty->low_latency is set.
+ *	Queue a push of the terminal flip buffers to the line discipline.
+ *	Can be called from IRQ/atomic context.
  *
  *	In the event of the queue being busy for flipping the work will be
  *	held off and retried later.
@@ -487,16 +483,7 @@ void tty_flush_to_ldisc(struct tty_struct *tty)
 
 void tty_flip_buffer_push(struct tty_struct *tty)
 {
-	unsigned long flags;
-	spin_lock_irqsave(&tty->buf.lock, flags);
-	if (tty->buf.tail != NULL)
-		tty->buf.tail->commit = tty->buf.tail->used;
-	spin_unlock_irqrestore(&tty->buf.lock, flags);
-
-	if (tty->low_latency)
-		flush_to_ldisc(&tty->buf.work);
-	else
-		schedule_work(&tty->buf.work);
+	tty_schedule_flip(port);
 }
 EXPORT_SYMBOL(tty_flip_buffer_push);
 
