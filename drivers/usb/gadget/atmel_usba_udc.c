@@ -1866,17 +1866,12 @@ int usb_gadget_unregister_driver(struct usb_gadget_driver *driver)
 	toggle_bias(0);
 	usba_writel(udc, CTRL, USBA_DISABLE_MASK);
 
-	if (udc->driver->disconnect)
-		udc->driver->disconnect(&udc->gadget);
+	clk_disable_unprepare(udc->hclk);
+	clk_disable_unprepare(udc->pclk);
 
-	driver->unbind(&udc->gadget);
-	udc->gadget.dev.driver = NULL;
+	DBG(DBG_GADGET, "unregistered driver `%s'\n", udc->driver->driver.name);
+
 	udc->driver = NULL;
-
-	clk_disable(udc->hclk);
-	clk_disable(udc->pclk);
-
-	DBG(DBG_GADGET, "unregistered driver `%s'\n", driver->driver.name);
 
 	return 0;
 }
