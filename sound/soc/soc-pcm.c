@@ -696,6 +696,1064 @@ int soc_new_pcm(struct snd_soc_pcm_runtime *rtd, int num)
 		ret = platform->driver->pcm_new(rtd);
 		if (ret < 0) {
 			pr_err("asoc: platform pcm constructor failed\n");
+		dev_dbg(be->dev, "ASoC: open %s BE %s\n",
+			stream ? "capture" : "playback", be->dai_link->name);
+
+		be_substream->runtime = be->dpcm[stream].runtime;
+		err = soc_pcm_open(be_substream);
+		if (err < 0) {
+			dev_err(be->dev, "ASoC: BE open failed %d\n", err);
+			be->dpcm[stream].users--;
+			if (be->dpcm[stream].users < 0)
+				dev_err(be->dev, "ASoC: no users %s at unwind %d\n",
+					stream ? "capture" : "playback",
+					be->dpcm[stream].state);
+
+			be->dpcm[stream].state = SND_SOC_DPCM_STATE_CLOSE;
+			goto unwind;
+		}
+
+		be->dpcm[stream].state = SND_SOC_DPCM_STATE_OPEN;
+		count++;
+	}
+
+	return count;
+
+unwind:
+	/* disable any enabled and non active backends */
+	list_for_each_entry_continue_reverse(dpcm, &fe->dpcm[stream].be_clients, list_be) {
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		struct snd_pcm_substream *be_substream =
+			snd_soc_dpcm_get_substream(be, stream);
+
+		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
+			continue;
+
+		if (be->dpcm[stream].users == 0)
+			dev_err(be->dev, "ASoC: no users %s at close %d\n",
+				stream ? "capture" : "playback",
+				be->dpcm[stream].state);
+
+		if (--be->dpcm[stream].users != 0)
+			continue;
+
+		if (be->dpcm[stream].state != SND_SOC_DPCM_STATE_OPEN)
+			continue;
+
+		soc_pcm_close(be_substream);
+		be_substream->runtime = NULL;
+		be->dpcm[stream].state = SND_SOC_DPCM_STATE_CLOSE;
+	}
+
+	return err;
+}
+
+static void dpcm_init_runtime_hw(struct snd_pcm_runtime *runtime,
+	struct snd_soc_pcm_stream *stream)
+{
+	runtime->hw.rate_min = stream->rate_min;
+	runtime->hw.rate_max = stream->rate_max;
+	runtime->hw.channels_min = stream->channels_min;
+	runtime->hw.channels_max = stream->channels_max;
+	if (runtime->hw.formats)
+		runtime->hw.formats &= stream->formats;
+	else
+		runtime->hw.formats = stream->formats;
+	runtime->hw.rates = stream->rates;
+}
+
+static void dpcm_set_fe_runtime(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai_driver *cpu_dai_drv = cpu_dai->driver;
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		dpcm_init_runtime_hw(runtime, &cpu_dai_drv->playback);
+	else
+		dpcm_init_runtime_hw(runtime, &cpu_dai_drv->capture);
+}
+
+static int dpcm_fe_dai_startup(struct snd_pcm_substream *fe_substream)
+{
+	struct snd_soc_pcm_runtime *fe = fe_substream->private_data;
+	struct snd_pcm_runtime *runtime = fe_substream->runtime;
+	int stream = fe_substream->stream, ret = 0;
+
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_FE;
+
+	ret = dpcm_be_dai_startup(fe, fe_substream->stream);
+	if (ret < 0) {
+		dev_err(fe->dev,"ASoC: failed to start some BEs %d\n", ret);
+		goto be_err;
+	}
+
+	dev_dbg(fe->dev, "ASoC: open FE %s\n", fe->dai_link->name);
+
+	/* start the DAI frontend */
+	ret = soc_pcm_open(fe_substream);
+	if (ret < 0) {
+		dev_err(fe->dev,"ASoC: failed to start FE %d\n", ret);
+		goto unwind;
+	}
+
+	fe->dpcm[stream].state = SND_SOC_DPCM_STATE_OPEN;
+
+	dpcm_set_fe_runtime(fe_substream);
+	snd_pcm_limit_hw_rates(runtime);
+
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+	return 0;
+
+unwind:
+	dpcm_be_dai_startup_unwind(fe, fe_substream->stream);
+be_err:
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+	return ret;
+}
+
+int dpcm_be_dai_shutdown(struct snd_soc_pcm_runtime *fe, int stream)
+{
+	struct snd_soc_dpcm *dpcm;
+
+	/* only shutdown BEs that are either sinks or sources to this FE DAI */
+	list_for_each_entry(dpcm, &fe->dpcm[stream].be_clients, list_be) {
+
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		struct snd_pcm_substream *be_substream =
+			snd_soc_dpcm_get_substream(be, stream);
+
+		/* is this op for this BE ? */
+		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
+			continue;
+
+		if (be->dpcm[stream].users == 0)
+			dev_err(be->dev, "ASoC: no users %s at close - state %d\n",
+				stream ? "capture" : "playback",
+				be->dpcm[stream].state);
+
+		if (--be->dpcm[stream].users != 0)
+			continue;
+
+		if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_FREE) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_OPEN))
+			continue;
+
+		dev_dbg(be->dev, "ASoC: close BE %s\n",
+			dpcm->fe->dai_link->name);
+
+		soc_pcm_close(be_substream);
+		be_substream->runtime = NULL;
+
+		be->dpcm[stream].state = SND_SOC_DPCM_STATE_CLOSE;
+	}
+	return 0;
+}
+
+static int dpcm_fe_dai_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *fe = substream->private_data;
+	int stream = substream->stream;
+
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_FE;
+
+	/* shutdown the BEs */
+	dpcm_be_dai_shutdown(fe, substream->stream);
+
+	dev_dbg(fe->dev, "ASoC: close FE %s\n", fe->dai_link->name);
+
+	/* now shutdown the frontend */
+	soc_pcm_close(substream);
+
+	/* run the stream event for each BE */
+	dpcm_dapm_stream_event(fe, stream, SND_SOC_DAPM_STREAM_STOP);
+
+	fe->dpcm[stream].state = SND_SOC_DPCM_STATE_CLOSE;
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+	return 0;
+}
+
+int dpcm_be_dai_hw_free(struct snd_soc_pcm_runtime *fe, int stream)
+{
+	struct snd_soc_dpcm *dpcm;
+
+	/* only hw_params backends that are either sinks or sources
+	 * to this frontend DAI */
+	list_for_each_entry(dpcm, &fe->dpcm[stream].be_clients, list_be) {
+
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		struct snd_pcm_substream *be_substream =
+			snd_soc_dpcm_get_substream(be, stream);
+
+		/* is this op for this BE ? */
+		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
+			continue;
+
+		/* only free hw when no longer used - check all FEs */
+		if (!snd_soc_dpcm_can_be_free_stop(fe, be, stream))
+				continue;
+
+		if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_PARAMS) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_PREPARE) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_FREE) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_PAUSED) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_STOP))
+			continue;
+
+		dev_dbg(be->dev, "ASoC: hw_free BE %s\n",
+			dpcm->fe->dai_link->name);
+
+		soc_pcm_hw_free(be_substream);
+
+		be->dpcm[stream].state = SND_SOC_DPCM_STATE_HW_FREE;
+	}
+
+	return 0;
+}
+
+static int dpcm_fe_dai_hw_free(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *fe = substream->private_data;
+	int err, stream = substream->stream;
+
+	mutex_lock_nested(&fe->card->mutex, SND_SOC_CARD_CLASS_RUNTIME);
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_FE;
+
+	dev_dbg(fe->dev, "ASoC: hw_free FE %s\n", fe->dai_link->name);
+
+	/* call hw_free on the frontend */
+	err = soc_pcm_hw_free(substream);
+	if (err < 0)
+		dev_err(fe->dev,"ASoC: hw_free FE %s failed\n",
+			fe->dai_link->name);
+
+	/* only hw_params backends that are either sinks or sources
+	 * to this frontend DAI */
+	err = dpcm_be_dai_hw_free(fe, stream);
+
+	fe->dpcm[stream].state = SND_SOC_DPCM_STATE_HW_FREE;
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+
+	mutex_unlock(&fe->card->mutex);
+	return 0;
+}
+
+int dpcm_be_dai_hw_params(struct snd_soc_pcm_runtime *fe, int stream)
+{
+	struct snd_soc_dpcm *dpcm;
+	int ret;
+
+	list_for_each_entry(dpcm, &fe->dpcm[stream].be_clients, list_be) {
+
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		struct snd_pcm_substream *be_substream =
+			snd_soc_dpcm_get_substream(be, stream);
+
+		/* is this op for this BE ? */
+		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
+			continue;
+
+		/* only allow hw_params() if no connected FEs are running */
+		if (!snd_soc_dpcm_can_be_params(fe, be, stream))
+			continue;
+
+		if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_OPEN) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_PARAMS) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_FREE))
+			continue;
+
+		dev_dbg(be->dev, "ASoC: hw_params BE %s\n",
+			dpcm->fe->dai_link->name);
+
+		/* copy params for each dpcm */
+		memcpy(&dpcm->hw_params, &fe->dpcm[stream].hw_params,
+				sizeof(struct snd_pcm_hw_params));
+
+		/* perform any hw_params fixups */
+		if (be->dai_link->be_hw_params_fixup) {
+			ret = be->dai_link->be_hw_params_fixup(be,
+					&dpcm->hw_params);
+			if (ret < 0) {
+				dev_err(be->dev,
+					"ASoC: hw_params BE fixup failed %d\n",
+					ret);
+				goto unwind;
+			}
+		}
+
+		ret = soc_pcm_hw_params(be_substream, &dpcm->hw_params);
+		if (ret < 0) {
+			dev_err(dpcm->be->dev,
+				"ASoC: hw_params BE failed %d\n", ret);
+			goto unwind;
+		}
+
+		be->dpcm[stream].state = SND_SOC_DPCM_STATE_HW_PARAMS;
+	}
+	return 0;
+
+unwind:
+	/* disable any enabled and non active backends */
+	list_for_each_entry_continue_reverse(dpcm, &fe->dpcm[stream].be_clients, list_be) {
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		struct snd_pcm_substream *be_substream =
+			snd_soc_dpcm_get_substream(be, stream);
+
+		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
+			continue;
+
+		/* only allow hw_free() if no connected FEs are running */
+		if (!snd_soc_dpcm_can_be_free_stop(fe, be, stream))
+			continue;
+
+		if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_OPEN) &&
+		   (be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_PARAMS) &&
+		   (be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_FREE) &&
+		   (be->dpcm[stream].state != SND_SOC_DPCM_STATE_STOP))
+			continue;
+
+		soc_pcm_hw_free(be_substream);
+	}
+
+	return ret;
+}
+
+static int dpcm_fe_dai_hw_params(struct snd_pcm_substream *substream,
+				 struct snd_pcm_hw_params *params)
+{
+	struct snd_soc_pcm_runtime *fe = substream->private_data;
+	int ret, stream = substream->stream;
+
+	mutex_lock_nested(&fe->card->mutex, SND_SOC_CARD_CLASS_RUNTIME);
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_FE;
+
+	memcpy(&fe->dpcm[substream->stream].hw_params, params,
+			sizeof(struct snd_pcm_hw_params));
+	ret = dpcm_be_dai_hw_params(fe, substream->stream);
+	if (ret < 0) {
+		dev_err(fe->dev,"ASoC: hw_params BE failed %d\n", ret);
+		goto out;
+	}
+
+	dev_dbg(fe->dev, "ASoC: hw_params FE %s rate %d chan %x fmt %d\n",
+			fe->dai_link->name, params_rate(params),
+			params_channels(params), params_format(params));
+
+	/* call hw_params on the frontend */
+	ret = soc_pcm_hw_params(substream, params);
+	if (ret < 0) {
+		dev_err(fe->dev,"ASoC: hw_params FE failed %d\n", ret);
+		dpcm_be_dai_hw_free(fe, stream);
+	 } else
+		fe->dpcm[stream].state = SND_SOC_DPCM_STATE_HW_PARAMS;
+
+out:
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+	mutex_unlock(&fe->card->mutex);
+	return ret;
+}
+
+static int dpcm_do_trigger(struct snd_soc_dpcm *dpcm,
+		struct snd_pcm_substream *substream, int cmd)
+{
+	int ret;
+
+	dev_dbg(dpcm->be->dev, "ASoC: trigger BE %s cmd %d\n",
+			dpcm->fe->dai_link->name, cmd);
+
+	ret = soc_pcm_trigger(substream, cmd);
+	if (ret < 0)
+		dev_err(dpcm->be->dev,"ASoC: trigger BE failed %d\n", ret);
+
+	return ret;
+}
+
+int dpcm_be_dai_trigger(struct snd_soc_pcm_runtime *fe, int stream,
+			       int cmd)
+{
+	struct snd_soc_dpcm *dpcm;
+	int ret = 0;
+
+	list_for_each_entry(dpcm, &fe->dpcm[stream].be_clients, list_be) {
+
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		struct snd_pcm_substream *be_substream =
+			snd_soc_dpcm_get_substream(be, stream);
+
+		/* is this op for this BE ? */
+		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
+			continue;
+
+		switch (cmd) {
+		case SNDRV_PCM_TRIGGER_START:
+			if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_PREPARE) &&
+			    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_STOP))
+				continue;
+
+			ret = dpcm_do_trigger(dpcm, be_substream, cmd);
+			if (ret)
+				return ret;
+
+			be->dpcm[stream].state = SND_SOC_DPCM_STATE_START;
+			break;
+		case SNDRV_PCM_TRIGGER_RESUME:
+			if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_SUSPEND))
+				continue;
+
+			ret = dpcm_do_trigger(dpcm, be_substream, cmd);
+			if (ret)
+				return ret;
+
+			be->dpcm[stream].state = SND_SOC_DPCM_STATE_START;
+			break;
+		case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+			if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_PAUSED))
+				continue;
+
+			ret = dpcm_do_trigger(dpcm, be_substream, cmd);
+			if (ret)
+				return ret;
+
+			be->dpcm[stream].state = SND_SOC_DPCM_STATE_START;
+			break;
+		case SNDRV_PCM_TRIGGER_STOP:
+			if (be->dpcm[stream].state != SND_SOC_DPCM_STATE_START)
+				continue;
+
+			if (!snd_soc_dpcm_can_be_free_stop(fe, be, stream))
+				continue;
+
+			ret = dpcm_do_trigger(dpcm, be_substream, cmd);
+			if (ret)
+				return ret;
+
+			be->dpcm[stream].state = SND_SOC_DPCM_STATE_STOP;
+			break;
+		case SNDRV_PCM_TRIGGER_SUSPEND:
+			if (be->dpcm[stream].state != SND_SOC_DPCM_STATE_STOP)
+				continue;
+
+			if (!snd_soc_dpcm_can_be_free_stop(fe, be, stream))
+				continue;
+
+			ret = dpcm_do_trigger(dpcm, be_substream, cmd);
+			if (ret)
+				return ret;
+
+			be->dpcm[stream].state = SND_SOC_DPCM_STATE_SUSPEND;
+			break;
+		case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+			if (be->dpcm[stream].state != SND_SOC_DPCM_STATE_START)
+				continue;
+
+			if (!snd_soc_dpcm_can_be_free_stop(fe, be, stream))
+				continue;
+
+			ret = dpcm_do_trigger(dpcm, be_substream, cmd);
+			if (ret)
+				return ret;
+
+			be->dpcm[stream].state = SND_SOC_DPCM_STATE_PAUSED;
+			break;
+		}
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(dpcm_be_dai_trigger);
+
+static int dpcm_fe_dai_trigger(struct snd_pcm_substream *substream, int cmd)
+{
+	struct snd_soc_pcm_runtime *fe = substream->private_data;
+	int stream = substream->stream, ret;
+	enum snd_soc_dpcm_trigger trigger = fe->dai_link->trigger[stream];
+
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_FE;
+
+	switch (trigger) {
+	case SND_SOC_DPCM_TRIGGER_PRE:
+		/* call trigger on the frontend before the backend. */
+
+		dev_dbg(fe->dev, "ASoC: pre trigger FE %s cmd %d\n",
+				fe->dai_link->name, cmd);
+
+		ret = soc_pcm_trigger(substream, cmd);
+		if (ret < 0) {
+			dev_err(fe->dev,"ASoC: trigger FE failed %d\n", ret);
+			goto out;
+		}
+
+		ret = dpcm_be_dai_trigger(fe, substream->stream, cmd);
+		break;
+	case SND_SOC_DPCM_TRIGGER_POST:
+		/* call trigger on the frontend after the backend. */
+
+		ret = dpcm_be_dai_trigger(fe, substream->stream, cmd);
+		if (ret < 0) {
+			dev_err(fe->dev,"ASoC: trigger FE failed %d\n", ret);
+			goto out;
+		}
+
+		dev_dbg(fe->dev, "ASoC: post trigger FE %s cmd %d\n",
+				fe->dai_link->name, cmd);
+
+		ret = soc_pcm_trigger(substream, cmd);
+		break;
+	case SND_SOC_DPCM_TRIGGER_BESPOKE:
+		/* bespoke trigger() - handles both FE and BEs */
+
+		dev_dbg(fe->dev, "ASoC: bespoke trigger FE %s cmd %d\n",
+				fe->dai_link->name, cmd);
+
+		ret = soc_pcm_bespoke_trigger(substream, cmd);
+		if (ret < 0) {
+			dev_err(fe->dev,"ASoC: trigger FE failed %d\n", ret);
+			goto out;
+		}
+		break;
+	default:
+		dev_err(fe->dev, "ASoC: invalid trigger cmd %d for %s\n", cmd,
+				fe->dai_link->name);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		fe->dpcm[stream].state = SND_SOC_DPCM_STATE_START;
+		break;
+	case SNDRV_PCM_TRIGGER_STOP:
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		fe->dpcm[stream].state = SND_SOC_DPCM_STATE_STOP;
+		break;
+	}
+
+out:
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+	return ret;
+}
+
+int dpcm_be_dai_prepare(struct snd_soc_pcm_runtime *fe, int stream)
+{
+	struct snd_soc_dpcm *dpcm;
+	int ret = 0;
+
+	list_for_each_entry(dpcm, &fe->dpcm[stream].be_clients, list_be) {
+
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		struct snd_pcm_substream *be_substream =
+			snd_soc_dpcm_get_substream(be, stream);
+
+		/* is this op for this BE ? */
+		if (!snd_soc_dpcm_be_can_update(fe, be, stream))
+			continue;
+
+		if ((be->dpcm[stream].state != SND_SOC_DPCM_STATE_HW_PARAMS) &&
+		    (be->dpcm[stream].state != SND_SOC_DPCM_STATE_STOP))
+			continue;
+
+		dev_dbg(be->dev, "ASoC: prepare BE %s\n",
+			dpcm->fe->dai_link->name);
+
+		ret = soc_pcm_prepare(be_substream);
+		if (ret < 0) {
+			dev_err(be->dev, "ASoC: backend prepare failed %d\n",
+				ret);
+			break;
+		}
+
+		be->dpcm[stream].state = SND_SOC_DPCM_STATE_PREPARE;
+	}
+	return ret;
+}
+
+static int dpcm_fe_dai_prepare(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *fe = substream->private_data;
+	int stream = substream->stream, ret = 0;
+
+	mutex_lock_nested(&fe->card->mutex, SND_SOC_CARD_CLASS_RUNTIME);
+
+	dev_dbg(fe->dev, "ASoC: prepare FE %s\n", fe->dai_link->name);
+
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_FE;
+
+	/* there is no point preparing this FE if there are no BEs */
+	if (list_empty(&fe->dpcm[stream].be_clients)) {
+		dev_err(fe->dev, "ASoC: no backend DAIs enabled for %s\n",
+				fe->dai_link->name);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	ret = dpcm_be_dai_prepare(fe, substream->stream);
+	if (ret < 0)
+		goto out;
+
+	/* call prepare on the frontend */
+	ret = soc_pcm_prepare(substream);
+	if (ret < 0) {
+		dev_err(fe->dev,"ASoC: prepare FE %s failed\n",
+			fe->dai_link->name);
+		goto out;
+	}
+
+	/* run the stream event for each BE */
+	dpcm_dapm_stream_event(fe, stream, SND_SOC_DAPM_STREAM_START);
+	fe->dpcm[stream].state = SND_SOC_DPCM_STATE_PREPARE;
+
+out:
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+	mutex_unlock(&fe->card->mutex);
+
+	return ret;
+}
+
+static int soc_pcm_ioctl(struct snd_pcm_substream *substream,
+		     unsigned int cmd, void *arg)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_platform *platform = rtd->platform;
+
+	if (platform->driver->ops && platform->driver->ops->ioctl)
+		return platform->driver->ops->ioctl(substream, cmd, arg);
+	return snd_pcm_lib_ioctl(substream, cmd, arg);
+}
+
+static int dpcm_run_update_shutdown(struct snd_soc_pcm_runtime *fe, int stream)
+{
+	struct snd_pcm_substream *substream =
+		snd_soc_dpcm_get_substream(fe, stream);
+	enum snd_soc_dpcm_trigger trigger = fe->dai_link->trigger[stream];
+	int err;
+
+	dev_dbg(fe->dev, "ASoC: runtime %s close on FE %s\n",
+			stream ? "capture" : "playback", fe->dai_link->name);
+
+	if (trigger == SND_SOC_DPCM_TRIGGER_BESPOKE) {
+		/* call bespoke trigger - FE takes care of all BE triggers */
+		dev_dbg(fe->dev, "ASoC: bespoke trigger FE %s cmd stop\n",
+				fe->dai_link->name);
+
+		err = soc_pcm_bespoke_trigger(substream, SNDRV_PCM_TRIGGER_STOP);
+		if (err < 0)
+			dev_err(fe->dev,"ASoC: trigger FE failed %d\n", err);
+	} else {
+		dev_dbg(fe->dev, "ASoC: trigger FE %s cmd stop\n",
+			fe->dai_link->name);
+
+		err = dpcm_be_dai_trigger(fe, stream, SNDRV_PCM_TRIGGER_STOP);
+		if (err < 0)
+			dev_err(fe->dev,"ASoC: trigger FE failed %d\n", err);
+	}
+
+	err = dpcm_be_dai_hw_free(fe, stream);
+	if (err < 0)
+		dev_err(fe->dev,"ASoC: hw_free FE failed %d\n", err);
+
+	err = dpcm_be_dai_shutdown(fe, stream);
+	if (err < 0)
+		dev_err(fe->dev,"ASoC: shutdown FE failed %d\n", err);
+
+	/* run the stream event for each BE */
+	dpcm_dapm_stream_event(fe, stream, SND_SOC_DAPM_STREAM_NOP);
+
+	return 0;
+}
+
+static int dpcm_run_update_startup(struct snd_soc_pcm_runtime *fe, int stream)
+{
+	struct snd_pcm_substream *substream =
+		snd_soc_dpcm_get_substream(fe, stream);
+	struct snd_soc_dpcm *dpcm;
+	enum snd_soc_dpcm_trigger trigger = fe->dai_link->trigger[stream];
+	int ret;
+
+	dev_dbg(fe->dev, "ASoC: runtime %s open on FE %s\n",
+			stream ? "capture" : "playback", fe->dai_link->name);
+
+	/* Only start the BE if the FE is ready */
+	if (fe->dpcm[stream].state == SND_SOC_DPCM_STATE_HW_FREE ||
+		fe->dpcm[stream].state == SND_SOC_DPCM_STATE_CLOSE)
+		return -EINVAL;
+
+	/* startup must always be called for new BEs */
+	ret = dpcm_be_dai_startup(fe, stream);
+	if (ret < 0)
+		goto disconnect;
+
+	/* keep going if FE state is > open */
+	if (fe->dpcm[stream].state == SND_SOC_DPCM_STATE_OPEN)
+		return 0;
+
+	ret = dpcm_be_dai_hw_params(fe, stream);
+	if (ret < 0)
+		goto close;
+
+	/* keep going if FE state is > hw_params */
+	if (fe->dpcm[stream].state == SND_SOC_DPCM_STATE_HW_PARAMS)
+		return 0;
+
+
+	ret = dpcm_be_dai_prepare(fe, stream);
+	if (ret < 0)
+		goto hw_free;
+
+	/* run the stream event for each BE */
+	dpcm_dapm_stream_event(fe, stream, SND_SOC_DAPM_STREAM_NOP);
+
+	/* keep going if FE state is > prepare */
+	if (fe->dpcm[stream].state == SND_SOC_DPCM_STATE_PREPARE ||
+		fe->dpcm[stream].state == SND_SOC_DPCM_STATE_STOP)
+		return 0;
+
+	if (trigger == SND_SOC_DPCM_TRIGGER_BESPOKE) {
+		/* call trigger on the frontend - FE takes care of all BE triggers */
+		dev_dbg(fe->dev, "ASoC: bespoke trigger FE %s cmd start\n",
+				fe->dai_link->name);
+
+		ret = soc_pcm_bespoke_trigger(substream, SNDRV_PCM_TRIGGER_START);
+		if (ret < 0) {
+			dev_err(fe->dev,"ASoC: bespoke trigger FE failed %d\n", ret);
+			goto hw_free;
+		}
+	} else {
+		dev_dbg(fe->dev, "ASoC: trigger FE %s cmd start\n",
+			fe->dai_link->name);
+
+		ret = dpcm_be_dai_trigger(fe, stream,
+					SNDRV_PCM_TRIGGER_START);
+		if (ret < 0) {
+			dev_err(fe->dev,"ASoC: trigger FE failed %d\n", ret);
+			goto hw_free;
+		}
+	}
+
+	return 0;
+
+hw_free:
+	dpcm_be_dai_hw_free(fe, stream);
+close:
+	dpcm_be_dai_shutdown(fe, stream);
+disconnect:
+	/* disconnect any non started BEs */
+	list_for_each_entry(dpcm, &fe->dpcm[stream].be_clients, list_be) {
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		if (be->dpcm[stream].state != SND_SOC_DPCM_STATE_START)
+				dpcm->state = SND_SOC_DPCM_LINK_STATE_FREE;
+	}
+
+	return ret;
+}
+
+static int dpcm_run_new_update(struct snd_soc_pcm_runtime *fe, int stream)
+{
+	int ret;
+
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_BE;
+	ret = dpcm_run_update_startup(fe, stream);
+	if (ret < 0)
+		dev_err(fe->dev, "ASoC: failed to startup some BEs\n");
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+
+	return ret;
+}
+
+static int dpcm_run_old_update(struct snd_soc_pcm_runtime *fe, int stream)
+{
+	int ret;
+
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_BE;
+	ret = dpcm_run_update_shutdown(fe, stream);
+	if (ret < 0)
+		dev_err(fe->dev, "ASoC: failed to shutdown some BEs\n");
+	fe->dpcm[stream].runtime_update = SND_SOC_DPCM_UPDATE_NO;
+
+	return ret;
+}
+
+/* Called by DAPM mixer/mux changes to update audio routing between PCMs and
+ * any DAI links.
+ */
+int soc_dpcm_runtime_update(struct snd_soc_card *card)
+{
+	int i, old, new, paths;
+
+	mutex_lock_nested(&card->mutex, SND_SOC_CARD_CLASS_RUNTIME);
+	for (i = 0; i < card->num_rtd; i++) {
+		struct snd_soc_dapm_widget_list *list;
+		struct snd_soc_pcm_runtime *fe = &card->rtd[i];
+
+		/* make sure link is FE */
+		if (!fe->dai_link->dynamic)
+			continue;
+
+		/* only check active links */
+		if (!fe->cpu_dai->active)
+			continue;
+
+		/* DAPM sync will call this to update DSP paths */
+		dev_dbg(fe->dev, "ASoC: DPCM runtime update for FE %s\n",
+			fe->dai_link->name);
+
+		/* skip if FE doesn't have playback capability */
+		if (!fe->cpu_dai->driver->playback.channels_min)
+			goto capture;
+
+		paths = dpcm_path_get(fe, SNDRV_PCM_STREAM_PLAYBACK, &list);
+		if (paths < 0) {
+			dev_warn(fe->dev, "ASoC: %s no valid %s path\n",
+					fe->dai_link->name,  "playback");
+			mutex_unlock(&card->mutex);
+			return paths;
+		}
+
+		/* update any new playback paths */
+		new = dpcm_process_paths(fe, SNDRV_PCM_STREAM_PLAYBACK, &list, 1);
+		if (new) {
+			dpcm_run_new_update(fe, SNDRV_PCM_STREAM_PLAYBACK);
+			dpcm_clear_pending_state(fe, SNDRV_PCM_STREAM_PLAYBACK);
+			dpcm_be_disconnect(fe, SNDRV_PCM_STREAM_PLAYBACK);
+		}
+
+		/* update any old playback paths */
+		old = dpcm_process_paths(fe, SNDRV_PCM_STREAM_PLAYBACK, &list, 0);
+		if (old) {
+			dpcm_run_old_update(fe, SNDRV_PCM_STREAM_PLAYBACK);
+			dpcm_clear_pending_state(fe, SNDRV_PCM_STREAM_PLAYBACK);
+			dpcm_be_disconnect(fe, SNDRV_PCM_STREAM_PLAYBACK);
+		}
+
+capture:
+		/* skip if FE doesn't have capture capability */
+		if (!fe->cpu_dai->driver->capture.channels_min)
+			continue;
+
+		paths = dpcm_path_get(fe, SNDRV_PCM_STREAM_CAPTURE, &list);
+		if (paths < 0) {
+			dev_warn(fe->dev, "ASoC: %s no valid %s path\n",
+					fe->dai_link->name,  "capture");
+			mutex_unlock(&card->mutex);
+			return paths;
+		}
+
+		/* update any new capture paths */
+		new = dpcm_process_paths(fe, SNDRV_PCM_STREAM_CAPTURE, &list, 1);
+		if (new) {
+			dpcm_run_new_update(fe, SNDRV_PCM_STREAM_CAPTURE);
+			dpcm_clear_pending_state(fe, SNDRV_PCM_STREAM_CAPTURE);
+			dpcm_be_disconnect(fe, SNDRV_PCM_STREAM_CAPTURE);
+		}
+
+		/* update any old capture paths */
+		old = dpcm_process_paths(fe, SNDRV_PCM_STREAM_CAPTURE, &list, 0);
+		if (old) {
+			dpcm_run_old_update(fe, SNDRV_PCM_STREAM_CAPTURE);
+			dpcm_clear_pending_state(fe, SNDRV_PCM_STREAM_CAPTURE);
+			dpcm_be_disconnect(fe, SNDRV_PCM_STREAM_CAPTURE);
+		}
+
+		dpcm_path_put(&list);
+	}
+
+	mutex_unlock(&card->mutex);
+	return 0;
+}
+int soc_dpcm_be_digital_mute(struct snd_soc_pcm_runtime *fe, int mute)
+{
+	struct snd_soc_dpcm *dpcm;
+	struct list_head *clients =
+		&fe->dpcm[SNDRV_PCM_STREAM_PLAYBACK].be_clients;
+
+	list_for_each_entry(dpcm, clients, list_be) {
+
+		struct snd_soc_pcm_runtime *be = dpcm->be;
+		struct snd_soc_dai *dai = be->codec_dai;
+		struct snd_soc_dai_driver *drv = dai->driver;
+
+		if (be->dai_link->ignore_suspend)
+			continue;
+
+		dev_dbg(be->dev, "ASoC: BE digital mute %s\n", be->dai_link->name);
+
+		if (drv->ops && drv->ops->digital_mute && dai->playback_active)
+			drv->ops->digital_mute(dai, mute);
+	}
+
+	return 0;
+}
+
+static int dpcm_fe_dai_open(struct snd_pcm_substream *fe_substream)
+{
+	struct snd_soc_pcm_runtime *fe = fe_substream->private_data;
+	struct snd_soc_dpcm *dpcm;
+	struct snd_soc_dapm_widget_list *list;
+	int ret;
+	int stream = fe_substream->stream;
+
+	mutex_lock_nested(&fe->card->mutex, SND_SOC_CARD_CLASS_RUNTIME);
+	fe->dpcm[stream].runtime = fe_substream->runtime;
+
+	if (dpcm_path_get(fe, stream, &list) <= 0) {
+		dev_dbg(fe->dev, "ASoC: %s no valid %s route\n",
+			fe->dai_link->name, stream ? "capture" : "playback");
+	}
+
+	/* calculate valid and active FE <-> BE dpcms */
+	dpcm_process_paths(fe, stream, &list, 1);
+
+	ret = dpcm_fe_dai_startup(fe_substream);
+	if (ret < 0) {
+		/* clean up all links */
+		list_for_each_entry(dpcm, &fe->dpcm[stream].be_clients, list_be)
+			dpcm->state = SND_SOC_DPCM_LINK_STATE_FREE;
+
+		dpcm_be_disconnect(fe, stream);
+		fe->dpcm[stream].runtime = NULL;
+	}
+
+	dpcm_clear_pending_state(fe, stream);
+	dpcm_path_put(&list);
+	mutex_unlock(&fe->card->mutex);
+	return ret;
+}
+
+static int dpcm_fe_dai_close(struct snd_pcm_substream *fe_substream)
+{
+	struct snd_soc_pcm_runtime *fe = fe_substream->private_data;
+	struct snd_soc_dpcm *dpcm;
+	int stream = fe_substream->stream, ret;
+
+	mutex_lock_nested(&fe->card->mutex, SND_SOC_CARD_CLASS_RUNTIME);
+	ret = dpcm_fe_dai_shutdown(fe_substream);
+
+	/* mark FE's links ready to prune */
+	list_for_each_entry(dpcm, &fe->dpcm[stream].be_clients, list_be)
+		dpcm->state = SND_SOC_DPCM_LINK_STATE_FREE;
+
+	dpcm_be_disconnect(fe, stream);
+
+	fe->dpcm[stream].runtime = NULL;
+	mutex_unlock(&fe->card->mutex);
+	return ret;
+}
+
+/* create a new pcm */
+int soc_new_pcm(struct snd_soc_pcm_runtime *rtd, int num)
+{
+	struct snd_soc_platform *platform = rtd->platform;
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_pcm *pcm;
+	char new_name[64];
+	int ret = 0, playback = 0, capture = 0;
+
+	if (rtd->dai_link->dynamic || rtd->dai_link->no_pcm) {
+		playback = rtd->dai_link->dpcm_playback;
+		capture = rtd->dai_link->dpcm_capture;
+	} else {
+		if (codec_dai->driver->playback.channels_min &&
+		    cpu_dai->driver->playback.channels_min)
+			playback = 1;
+		if (codec_dai->driver->capture.channels_min &&
+		    cpu_dai->driver->capture.channels_min)
+			capture = 1;
+	}
+
+	if (rtd->dai_link->playback_only) {
+		playback = 1;
+		capture = 0;
+	}
+
+	if (rtd->dai_link->capture_only) {
+		playback = 0;
+		capture = 1;
+	}
+
+	/* create the PCM */
+	if (rtd->dai_link->no_pcm) {
+		snprintf(new_name, sizeof(new_name), "(%s)",
+			rtd->dai_link->stream_name);
+
+		ret = snd_pcm_new_internal(rtd->card->snd_card, new_name, num,
+				playback, capture, &pcm);
+	} else {
+		if (rtd->dai_link->dynamic)
+			snprintf(new_name, sizeof(new_name), "%s (*)",
+				rtd->dai_link->stream_name);
+		else
+			snprintf(new_name, sizeof(new_name), "%s %s-%d",
+				rtd->dai_link->stream_name, codec_dai->name, num);
+
+		ret = snd_pcm_new(rtd->card->snd_card, new_name, num, playback,
+			capture, &pcm);
+	}
+	if (ret < 0) {
+		dev_err(rtd->card->dev, "ASoC: can't create pcm for %s\n",
+			rtd->dai_link->name);
+		return ret;
+	}
+	dev_dbg(rtd->card->dev, "ASoC: registered pcm #%d %s\n",num, new_name);
+
+	/* DAPM dai link stream work */
+	INIT_DELAYED_WORK(&rtd->delayed_work, close_delayed_work);
+
+	rtd->pcm = pcm;
+	pcm->private_data = rtd;
+
+	if (rtd->dai_link->no_pcm) {
+		if (playback)
+			pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream->private_data = rtd;
+		if (capture)
+			pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream->private_data = rtd;
+		goto out;
+	}
+
+	/* ASoC PCM operations */
+	if (rtd->dai_link->dynamic) {
+		rtd->ops.open		= dpcm_fe_dai_open;
+		rtd->ops.hw_params	= dpcm_fe_dai_hw_params;
+		rtd->ops.prepare	= dpcm_fe_dai_prepare;
+		rtd->ops.trigger	= dpcm_fe_dai_trigger;
+		rtd->ops.hw_free	= dpcm_fe_dai_hw_free;
+		rtd->ops.close		= dpcm_fe_dai_close;
+		rtd->ops.pointer	= soc_pcm_pointer;
+		rtd->ops.ioctl		= soc_pcm_ioctl;
+	} else {
+		rtd->ops.open		= soc_pcm_open;
+		rtd->ops.hw_params	= soc_pcm_hw_params;
+		rtd->ops.prepare	= soc_pcm_prepare;
+		rtd->ops.trigger	= soc_pcm_trigger;
+		rtd->ops.hw_free	= soc_pcm_hw_free;
+		rtd->ops.close		= soc_pcm_close;
+		rtd->ops.pointer	= soc_pcm_pointer;
+		rtd->ops.ioctl		= soc_pcm_ioctl;
+	}
+
+	if (platform->driver->ops) {
+		rtd->ops.ack		= platform->driver->ops->ack;
+		rtd->ops.copy		= platform->driver->ops->copy;
+		rtd->ops.silence	= platform->driver->ops->silence;
+		rtd->ops.page		= platform->driver->ops->page;
+		rtd->ops.mmap		= platform->driver->ops->mmap;
+	}
+
+	if (playback)
+		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &rtd->ops);
+
+	if (capture)
+		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &rtd->ops);
+
+	if (platform->driver->pcm_new) {
+		ret = platform->driver->pcm_new(rtd);
+		if (ret < 0) {
+			dev_err(platform->dev,
+				"ASoC: pcm constructor failed: %d\n",
+				ret);
 			return ret;
 		}
 	}
