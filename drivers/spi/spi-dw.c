@@ -690,12 +690,6 @@ static int dw_spi_setup(struct spi_device *spi)
 	return 0;
 }
 
-static void dw_spi_cleanup(struct spi_device *spi)
-{
-	struct chip_data *chip = spi_get_ctldata(spi);
-	kfree(chip);
-}
-
 static int init_queue(struct dw_spi *dws)
 {
 	INIT_LIST_HEAD(&dws->queue);
@@ -826,7 +820,6 @@ int dw_spi_add_host(struct dw_spi *dws)
 	master->mode_bits = SPI_CPOL | SPI_CPHA;
 	master->bus_num = dws->bus_num;
 	master->num_chipselect = dws->num_cs;
-	master->cleanup = dw_spi_cleanup;
 	master->setup = dw_spi_setup;
 	master->transfer = dw_spi_transfer;
 
