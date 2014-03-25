@@ -69,6 +69,70 @@ static inline void serial_omap_clear_fifos(struct uart_omap_port *up)
 	serial_out(up, UART_FCR, 0);
 }
 
+static int serial_omap_get_context_loss_count(struct uart_omap_port *up)
+{
+	struct omap_uart_port_info *pdata = dev_get_platdata(up->dev);
+
+	if (!pdata || !pdata->get_context_loss_count)
+		return -EINVAL;
+
+	return pdata->get_context_loss_count(up->dev);
+}
+
+static inline void serial_omap_enable_wakeirq(struct uart_omap_port *up,
+				       bool enable)
+{
+	if (!up->wakeirq)
+		return;
+
+	if (enable)
+		enable_irq(up->wakeirq);
+	else
+		disable_irq_nosync(up->wakeirq);
+}
+
+static void serial_omap_enable_wakeup(struct uart_omap_port *up, bool enable)
+{
+	struct omap_uart_port_info *pdata = dev_get_platdata(up->dev);
+
+	if (enable == up->wakeups_enabled)
+		return;
+
+	serial_omap_enable_wakeirq(up, enable);
+	up->wakeups_enabled = enable;
+
+	if (!pdata || !pdata->enable_wakeup)
+		return;
+
+	pdata->enable_wakeup(up->dev, enable);
+}
+
+/*
+ * serial_omap_baud_is_mode16 - check if baud rate is MODE16X
+ * @port: uart port info
+ * @baud: baudrate for which mode needs to be determined
+ *
+ * Returns true if baud rate is MODE16X and false if MODE13X
+ * Original table in OMAP TRM named "UART Mode Baud Rates, Divisor Values,
+ * and Error Rates" determines modes not for all common baud rates.
+ * E.g. for 1000000 baud rate mode must be 16x, but according to that
+ * table it's determined as 13x.
+ */
+static bool
+serial_omap_baud_is_mode16(struct uart_port *port, unsigned int baud)
+{
+	unsigned int n13 = port->uartclk / (13 * baud);
+	unsigned int n16 = port->uartclk / (16 * baud);
+	int baudAbsDiff13 = baud - (port->uartclk / (13 * n13));
+	int baudAbsDiff16 = baud - (port->uartclk / (16 * n16));
+	if (baudAbsDiff13 < 0)
+		baudAbsDiff13 = -baudAbsDiff13;
+	if (baudAbsDiff16 < 0)
+		baudAbsDiff16 = -baudAbsDiff16;
+
+	return (baudAbsDiff13 >= baudAbsDiff16);
+}
+
 /*
  * serial_omap_get_divisor - calculate divisor value
  * @port: uart port info
@@ -1103,34 +1167,24 @@ static void serial_omap_rx_timeout(unsigned long uart_no)
 		return;
 	}
 
-	curr_transmitted_size = curr_dma_pos -
-					up->uart_dma.prev_rx_dma_pos;
-	up->port.icount.rx += curr_transmitted_size;
-	tty_insert_flip_string(up->port.state->port.tty,
-			up->uart_dma.rx_buf +
-			(up->uart_dma.prev_rx_dma_pos -
-			up->uart_dma.rx_buf_dma_phys),
-			curr_transmitted_size);
-	tty_flip_buffer_push(up->port.state->port.tty);
-	up->uart_dma.prev_rx_dma_pos = curr_dma_pos;
-	if (up->uart_dma.rx_buf_size +
-			up->uart_dma.rx_buf_dma_phys == curr_dma_pos) {
-		ret = serial_omap_start_rxdma(up);
-		if (ret < 0) {
-			serial_omap_stop_rxdma(up);
-			up->ier |= (UART_IER_RDI | UART_IER_RLSI);
-			serial_out(up, UART_IER, up->ier);
-		}
-	} else  {
-		mod_timer(&up->uart_dma.rx_timer, jiffies +
-			usecs_to_jiffies(up->uart_dma.rx_timeout));
-	}
-	up->port_activity = jiffies;
+	if (device_may_wakeup(dev))
+		serial_omap_enable_wakeup(up, true);
+	else
+		serial_omap_enable_wakeup(up, false);
+
+	return 0;
 }
 
 static void uart_rx_dma_callback(int lch, u16 ch_status, void *data)
 {
-	return;
+	struct uart_omap_port *up = dev_get_drvdata(dev);
+
+	if (device_may_wakeup(dev))
+		serial_omap_enable_wakeup(up, false);
+
+	uart_resume_port(&serial_omap_reg, &up->port);
+
+	return 0;
 }
 
 static int serial_omap_start_rxdma(struct uart_omap_port *up)
@@ -1318,13 +1372,145 @@ static int serial_omap_remove(struct platform_device *dev)
 {
 	struct uart_omap_port *up = platform_get_drvdata(dev);
 
-	platform_set_drvdata(dev, NULL);
-	if (up) {
-		uart_remove_one_port(&serial_omap_reg, &up->port);
-		kfree(up);
-	}
+	pm_runtime_put_sync(up->dev);
+	pm_runtime_disable(up->dev);
+	uart_remove_one_port(&serial_omap_reg, &up->port);
+	pm_qos_remove_request(&up->pm_qos_request);
+
 	return 0;
 }
+
+/*
+ * Work Around for Errata i202 (2430, 3430, 3630, 4430 and 4460)
+ * The access to uart register after MDR1 Access
+ * causes UART to corrupt data.
+ *
+ * Need a delay =
+ * 5 L4 clock cycles + 5 UART functional clock cycle (@48MHz = ~0.2uS)
+ * give 10 times as much
+ */
+static void serial_omap_mdr1_errataset(struct uart_omap_port *up, u8 mdr1)
+{
+	u8 timeout = 255;
+
+	serial_out(up, UART_OMAP_MDR1, mdr1);
+	udelay(2);
+	serial_out(up, UART_FCR, up->fcr | UART_FCR_CLEAR_XMIT |
+			UART_FCR_CLEAR_RCVR);
+	/*
+	 * Wait for FIFO to empty: when empty, RX_FIFO_E bit is 0 and
+	 * TX_FIFO_E bit is 1.
+	 */
+	while (UART_LSR_THRE != (serial_in(up, UART_LSR) &
+				(UART_LSR_THRE | UART_LSR_DR))) {
+		timeout--;
+		if (!timeout) {
+			/* Should *never* happen. we warn and carry on */
+			dev_crit(up->dev, "Errata i202: timedout %x\n",
+						serial_in(up, UART_LSR));
+			break;
+		}
+		udelay(1);
+	}
+}
+
+#ifdef CONFIG_PM_RUNTIME
+static void serial_omap_restore_context(struct uart_omap_port *up)
+{
+	if (up->errata & UART_ERRATA_i202_MDR1_ACCESS)
+		serial_omap_mdr1_errataset(up, UART_OMAP_MDR1_DISABLE);
+	else
+		serial_out(up, UART_OMAP_MDR1, UART_OMAP_MDR1_DISABLE);
+
+	serial_out(up, UART_LCR, UART_LCR_CONF_MODE_B); /* Config B mode */
+	serial_out(up, UART_EFR, UART_EFR_ECB);
+	serial_out(up, UART_LCR, 0x0); /* Operational mode */
+	serial_out(up, UART_IER, 0x0);
+	serial_out(up, UART_LCR, UART_LCR_CONF_MODE_B); /* Config B mode */
+	serial_out(up, UART_DLL, up->dll);
+	serial_out(up, UART_DLM, up->dlh);
+	serial_out(up, UART_LCR, 0x0); /* Operational mode */
+	serial_out(up, UART_IER, up->ier);
+	serial_out(up, UART_FCR, up->fcr);
+	serial_out(up, UART_LCR, UART_LCR_CONF_MODE_A);
+	serial_out(up, UART_MCR, up->mcr);
+	serial_out(up, UART_LCR, UART_LCR_CONF_MODE_B); /* Config B mode */
+	serial_out(up, UART_OMAP_SCR, up->scr);
+	serial_out(up, UART_EFR, up->efr);
+	serial_out(up, UART_LCR, up->lcr);
+	if (up->errata & UART_ERRATA_i202_MDR1_ACCESS)
+		serial_omap_mdr1_errataset(up, up->mdr1);
+	else
+		serial_out(up, UART_OMAP_MDR1, up->mdr1);
+	serial_out(up, UART_OMAP_WER, up->wer);
+}
+
+static int serial_omap_runtime_suspend(struct device *dev)
+{
+	struct uart_omap_port *up = dev_get_drvdata(dev);
+
+	if (!up)
+		return -EINVAL;
+
+	/*
+	* When using 'no_console_suspend', the console UART must not be
+	* suspended. Since driver suspend is managed by runtime suspend,
+	* preventing runtime suspend (by returning error) will keep device
+	* active during suspend.
+	*/
+	if (up->is_suspending && !console_suspend_enabled &&
+	    uart_console(&up->port))
+		return -EBUSY;
+
+	up->context_loss_cnt = serial_omap_get_context_loss_count(up);
+
+	serial_omap_enable_wakeup(up, true);
+
+	up->latency = PM_QOS_CPU_DMA_LAT_DEFAULT_VALUE;
+	schedule_work(&up->qos_work);
+
+	return 0;
+}
+
+static int serial_omap_runtime_resume(struct device *dev)
+{
+	struct uart_omap_port *up = dev_get_drvdata(dev);
+
+	int loss_cnt = serial_omap_get_context_loss_count(up);
+
+	serial_omap_enable_wakeup(up, false);
+
+	if (loss_cnt < 0) {
+		dev_dbg(dev, "serial_omap_get_context_loss_count failed : %d\n",
+			loss_cnt);
+		serial_omap_restore_context(up);
+	} else if (up->context_loss_cnt != loss_cnt) {
+		serial_omap_restore_context(up);
+	}
+	up->latency = up->calc_latency;
+	schedule_work(&up->qos_work);
+
+	return 0;
+}
+#endif
+
+static const struct dev_pm_ops serial_omap_dev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(serial_omap_suspend, serial_omap_resume)
+	SET_RUNTIME_PM_OPS(serial_omap_runtime_suspend,
+				serial_omap_runtime_resume, NULL)
+	.prepare        = serial_omap_prepare,
+	.complete       = serial_omap_complete,
+};
+
+#if defined(CONFIG_OF)
+static const struct of_device_id omap_serial_of_match[] = {
+	{ .compatible = "ti,omap2-uart" },
+	{ .compatible = "ti,omap3-uart" },
+	{ .compatible = "ti,omap4-uart" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, omap_serial_of_match);
+#endif
 
 static struct platform_driver serial_omap_driver = {
 	.probe          = serial_omap_probe,
