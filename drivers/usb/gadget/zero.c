@@ -293,6 +293,62 @@ static int __init zero_bind(struct usb_composite_dev *cdev)
 
 	setup_timer(&autoresume_timer, zero_autoresume, (unsigned long) cdev);
 
+	func_inst_ss = usb_get_function_instance("SourceSink");
+	if (IS_ERR(func_inst_ss))
+		return PTR_ERR(func_inst_ss);
+
+	ss_opts =  container_of(func_inst_ss, struct f_ss_opts, func_inst);
+	ss_opts->pattern = gzero_options.pattern;
+	ss_opts->isoc_interval = gzero_options.isoc_interval;
+	ss_opts->isoc_maxpacket = gzero_options.isoc_maxpacket;
+	ss_opts->isoc_mult = gzero_options.isoc_mult;
+	ss_opts->isoc_maxburst = gzero_options.isoc_maxburst;
+	ss_opts->bulk_buflen = gzero_options.bulk_buflen;
+
+	func_ss = usb_get_function(func_inst_ss);
+	if (IS_ERR(func_ss)) {
+		status = PTR_ERR(func_ss);
+		goto err_put_func_inst_ss;
+	}
+
+	func_inst_lb = usb_get_function_instance("Loopback");
+	if (IS_ERR(func_inst_lb)) {
+		status = PTR_ERR(func_inst_lb);
+		goto err_put_func_ss;
+	}
+
+	lb_opts = container_of(func_inst_lb, struct f_lb_opts, func_inst);
+	lb_opts->bulk_buflen = gzero_options.bulk_buflen;
+	lb_opts->qlen = gzero_options.qlen;
+
+	func_lb = usb_get_function(func_inst_lb);
+	if (IS_ERR(func_lb)) {
+		status = PTR_ERR(func_lb);
+		goto err_put_func_inst_lb;
+	}
+
+	sourcesink_driver.iConfiguration = strings_dev[USB_GZERO_SS_DESC].id;
+	loopback_driver.iConfiguration = strings_dev[USB_GZERO_LB_DESC].id;
+
+	/* support autoresume for remote wakeup testing */
+	sourcesink_driver.bmAttributes &= ~USB_CONFIG_ATT_WAKEUP;
+	loopback_driver.bmAttributes &= ~USB_CONFIG_ATT_WAKEUP;
+	sourcesink_driver.descriptors = NULL;
+	loopback_driver.descriptors = NULL;
+	if (autoresume) {
+		sourcesink_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
+		loopback_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
+		autoresume_step_ms = autoresume * 1000;
+	}
+
+	/* support OTG systems */
+	if (gadget_is_otg(cdev->gadget)) {
+		sourcesink_driver.descriptors = otg_desc;
+		sourcesink_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
+		loopback_driver.descriptors = otg_desc;
+		loopback_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;
+	}
+
 	/* Register primary, then secondary configuration.  Note that
 	 * SH3 only allows one config...
 	 */
