@@ -112,6 +112,86 @@ out:
 	return neigh_node;
 }
 
+/**
+ * batadv_neigh_node_get - retrieve a neighbour from the list
+ * @orig_node: originator which the neighbour belongs to
+ * @hard_iface: the interface where this neighbour is connected to
+ * @addr: the address of the neighbour
+ *
+ * Looks for and possibly returns a neighbour belonging to this originator list
+ * which is connected through the provided hard interface.
+ * Returns NULL if the neighbour is not found.
+ */
+struct batadv_neigh_node *
+batadv_neigh_node_get(const struct batadv_orig_node *orig_node,
+		      const struct batadv_hard_iface *hard_iface,
+		      const uint8_t *addr)
+{
+	struct batadv_neigh_node *tmp_neigh_node, *res = NULL;
+
+	rcu_read_lock();
+	hlist_for_each_entry_rcu(tmp_neigh_node, &orig_node->neigh_list, list) {
+		if (!batadv_compare_eth(tmp_neigh_node->addr, addr))
+			continue;
+
+		if (tmp_neigh_node->if_incoming != hard_iface)
+			continue;
+
+		if (!atomic_inc_not_zero(&tmp_neigh_node->refcount))
+			continue;
+
+		res = tmp_neigh_node;
+		break;
+	}
+	rcu_read_unlock();
+
+	return res;
+}
+
+/**
+ * batadv_orig_ifinfo_free_rcu - free the orig_ifinfo object
+ * @rcu: rcu pointer of the orig_ifinfo object
+ */
+static void batadv_orig_ifinfo_free_rcu(struct rcu_head *rcu)
+{
+	struct batadv_orig_ifinfo *orig_ifinfo;
+	struct batadv_neigh_node *router;
+
+	orig_ifinfo = container_of(rcu, struct batadv_orig_ifinfo, rcu);
+
+	if (orig_ifinfo->if_outgoing != BATADV_IF_DEFAULT)
+		batadv_hardif_free_ref_now(orig_ifinfo->if_outgoing);
+
+	/* this is the last reference to this object */
+	router = rcu_dereference_protected(orig_ifinfo->router, true);
+	if (router)
+		batadv_neigh_node_free_ref_now(router);
+	kfree(orig_ifinfo);
+}
+
+/**
+ * batadv_orig_ifinfo_free_ref - decrement the refcounter and possibly free
+ *  the orig_ifinfo (without rcu callback)
+ * @orig_ifinfo: the orig_ifinfo object to release
+ */
+static void
+batadv_orig_ifinfo_free_ref_now(struct batadv_orig_ifinfo *orig_ifinfo)
+{
+	if (atomic_dec_and_test(&orig_ifinfo->refcount))
+		batadv_orig_ifinfo_free_rcu(&orig_ifinfo->rcu);
+}
+
+/**
+ * batadv_orig_ifinfo_free_ref - decrement the refcounter and possibly free
+ *  the orig_ifinfo
+ * @orig_ifinfo: the orig_ifinfo object to release
+ */
+void batadv_orig_ifinfo_free_ref(struct batadv_orig_ifinfo *orig_ifinfo)
+{
+	if (atomic_dec_and_test(&orig_ifinfo->refcount))
+		call_rcu(&orig_ifinfo->rcu, batadv_orig_ifinfo_free_rcu);
+}
+
 static void batadv_orig_node_free_rcu(struct rcu_head *rcu)
 {
 	struct hlist_node *node, *node_tmp;
