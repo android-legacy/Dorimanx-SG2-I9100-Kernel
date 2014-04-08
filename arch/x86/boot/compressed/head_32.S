@@ -62,7 +62,14 @@ ENTRY(efi_pe_entry)
 	popl	%ecx
 	pushl	%eax
 	pushl	%ecx
-	jmp	2f		/* Skip efi_config initialization */
+
+	call	reloc
+reloc:
+	popl	%ecx
+	subl	reloc, %ecx
+	movl	%ecx, BP_code32_start(%eax)
+
+	sub	$0x4, %esp
 
 ENTRY(efi32_stub_entry)
 	add	$0x4, %esp
@@ -90,12 +97,7 @@ fail:
 	hlt
 	jmp	fail
 2:
-	call	3f
-3:
-	popl	%eax
-	subl	$3b, %eax
-	subl	BP_pref_address(%esi), %eax
-	add	BP_code32_start(%esi), %eax
+	movl	BP_code32_start(%esi), %eax
 	leal	preferred_addr(%eax), %eax
 	jmp	*%eax
 
