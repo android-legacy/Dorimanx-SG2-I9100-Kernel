@@ -396,10 +396,10 @@ static efi_status_t handle_cmdline_files(efi_system_table_t *sys_table_arg,
 					chunksize = EFI_READ_CHUNK_SIZE;
 				else
 					chunksize = size;
-
-				status = efi_file_read(fh, files[j].handle,
-						       &chunksize,
-						       (void *)addr);
+				status = efi_call_phys3(files[j].handle->read,
+							files[j].handle,
+							&chunksize,
+							(void *)addr);
 				if (status != EFI_SUCCESS) {
 					efi_printk(sys_table_arg, "Failed to read file\n");
 					goto free_file_total;
@@ -408,7 +408,7 @@ static efi_status_t handle_cmdline_files(efi_system_table_t *sys_table_arg,
 				size -= chunksize;
 			}
 
-			efi_file_close(fh, files[j].handle);
+			efi_call_phys1(files[j].handle->close, files[j].handle);
 		}
 
 	}
@@ -425,7 +425,7 @@ free_file_total:
 
 close_handles:
 	for (k = j; k < i; k++)
-		efi_file_close(fh, files[k].handle);
+		efi_call_phys1(files[k].handle->close, files[k].handle);
 free_files:
 	efi_call_early(free_pool, files);
 fail:
