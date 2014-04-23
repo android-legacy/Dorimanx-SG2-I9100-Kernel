@@ -1385,13 +1385,13 @@ EXPORT_SYMBOL_GPL(usb_serial_register);
 
 void usb_serial_deregister(struct usb_serial_driver *device)
 {
-	/* must be called with BKL held */
-	printk(KERN_INFO "USB Serial deregistering driver %s\n",
-	       device->description);
+	pr_info("USB Serial deregistering driver %s\n", device->description);
+
 	mutex_lock(&table_lock);
 	list_del(&device->driver_list);
-	usb_serial_bus_deregister(device);
 	mutex_unlock(&table_lock);
+
+	usb_serial_bus_deregister(device);
 }
 EXPORT_SYMBOL_GPL(usb_serial_deregister);
 
