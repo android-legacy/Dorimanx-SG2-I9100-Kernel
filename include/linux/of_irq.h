@@ -64,6 +64,20 @@ extern int of_irq_to_resource_table(struct device_node *dev,
 
 extern void of_irq_init(const struct of_device_id *matches);
 
+#ifdef CONFIG_OF_IRQ
+extern int of_irq_count(struct device_node *dev);
+extern int of_irq_get(struct device_node *dev, int index);
+#else
+static inline int of_irq_count(struct device_node *dev)
+{
+	return 0;
+}
+static inline int of_irq_get(struct device_node *dev, int index)
+{
+	return 0;
+}
+#endif
+
 #if defined(CONFIG_OF)
 /*
  * irq_of_parse_and_map() is used by all OF enabled platforms; but SPARC
