@@ -684,6 +684,19 @@ static void serial8250_clear_fifos(struct uart_8250_port *p)
  */
 static void serial8250_set_sleep(struct uart_8250_port *p, int sleep)
 {
+	/*
+	 * Exar UARTs have a SLEEP register that enables or disables
+	 * each UART to enter sleep mode separately.  On the XR17V35x the
+	 * register is accessible to each UART at the UART_EXAR_SLEEP
+	 * offset but the UART channel may only write to the corresponding
+	 * bit.
+	 */
+	if ((p->port.type == PORT_XR17V35X) ||
+	   (p->port.type == PORT_XR17D15X)) {
+		serial_out(p, UART_EXAR_SLEEP, sleep ? 0xff : 0);
+		return;
+	}
+
 	if (p->capabilities & UART_CAP_SLEEP) {
 		if (p->capabilities & UART_CAP_EFR) {
 			serial_outp(p, UART_LCR, UART_LCR_CONF_MODE_B);
