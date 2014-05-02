@@ -214,14 +214,19 @@ int tty_buffer_request_room(struct tty_struct *tty, size_t size)
 
 	if (left < size) {
 		/* This is the slow path - looking for new buffers to use */
-		if ((n = tty_buffer_find(tty, size)) != NULL) {
-			if (b != NULL) {
-				b->next = n;
-				b->commit = b->used;
-			} else
-				tty->buf.head = n;
-			tty->buf.tail = n;
-		} else
+		if ((n = tty_buffer_alloc(port, size)) != NULL) {
+			n->flags = flags;
+			buf->tail = n;
+			b->commit = b->used;
+			/* paired w/ barrier in flush_to_ldisc(); ensures the
+			 * latest commit value can be read before the head is
+			 * advanced to the next buffer
+			 */
+			smp_wmb();
+			b->next = n;
+		} else if (change)
+			size = 0;
+		else
 			size = left;
 	}
 
@@ -406,39 +411,30 @@ static void flush_to_ldisc(struct work_struct *work)
 	if (disc == NULL)	/*  !TTY_LDISC */
 		return;
 
-	spin_lock_irqsave(&tty->buf.lock, flags);
+	mutex_lock(&buf->lock);
 
-	if (!test_and_set_bit(TTY_FLUSHING, &tty->flags)) {
-		struct tty_buffer *head;
-		while ((head = tty->buf.head) != NULL) {
-			int count;
-			char *char_buf;
-			unsigned char *flag_buf;
+	while (1) {
+		struct tty_buffer *head = buf->head;
+		struct tty_buffer *next;
+		int count;
 
-			count = head->commit - head->read;
-			if (!count) {
-				if (head->next == NULL)
-					break;
-				tty->buf.head = head->next;
-				tty_buffer_free(tty, head);
-				continue;
-			}
-			/* Ldisc or user is trying to flush the buffers
-			   we are feeding to the ldisc, stop feeding the
-			   line discipline as we want to empty the queue */
-			if (test_bit(TTY_FLUSHPENDING, &tty->flags))
+		/* Ldisc or user is trying to gain exclusive access */
+		if (atomic_read(&buf->priority))
+			break;
+
+		next = head->next;
+		/* paired w/ barrier in __tty_buffer_request_room();
+		 * ensures commit value read is not stale if the head
+		 * is advancing to the next buffer
+		 */
+		smp_rmb();
+		count = head->commit - head->read;
+		if (!count) {
+			if (next == NULL)
 				break;
-			if (!tty->receive_room)
-				break;
-			if (count > tty->receive_room)
-				count = tty->receive_room;
-			char_buf = head->char_buf_ptr + head->read;
-			flag_buf = head->flag_buf_ptr + head->read;
-			head->read += count;
-			spin_unlock_irqrestore(&tty->buf.lock, flags);
-			disc->ops->receive_buf(tty, char_buf,
-							flag_buf, count);
-			spin_lock_irqsave(&tty->buf.lock, flags);
+			buf->head = next;
+			tty_buffer_free(port, head);
+			continue;
 		}
 		clear_bit(TTY_FLUSHING, &tty->flags);
 	}
