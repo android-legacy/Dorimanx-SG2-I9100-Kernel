@@ -276,35 +276,45 @@ do {								\
 #define net_dbg_ratelimited(fmt, ...)				\
 	net_ratelimited_function(pr_debug, fmt, ##__VA_ARGS__)
 
-#define net_random()		random32()
-#define net_srandom(seed)	srandom32((__force u32)seed)
+bool __net_get_random_once(void *buf, int nbytes, bool *done,
+			   struct static_key *done_key);
 
-extern int   	     kernel_sendmsg(struct socket *sock, struct msghdr *msg,
-				    struct kvec *vec, size_t num, size_t len);
-extern int   	     kernel_recvmsg(struct socket *sock, struct msghdr *msg,
-				    struct kvec *vec, size_t num,
-				    size_t len, int flags);
+#define net_get_random_once(buf, nbytes)				\
+	({								\
+		bool ___ret = false;					\
+		static bool ___done = false;				\
+		static struct static_key ___once_key =			\
+			STATIC_KEY_INIT_TRUE;				\
+		if (static_key_true(&___once_key))			\
+			___ret = __net_get_random_once(buf,		\
+						       nbytes,		\
+						       &___done,	\
+						       &___once_key);	\
+		___ret;							\
+	})
 
-extern int kernel_bind(struct socket *sock, struct sockaddr *addr,
-		       int addrlen);
-extern int kernel_listen(struct socket *sock, int backlog);
-extern int kernel_accept(struct socket *sock, struct socket **newsock,
-			 int flags);
-extern int kernel_connect(struct socket *sock, struct sockaddr *addr,
-			  int addrlen, int flags);
-extern int kernel_getsockname(struct socket *sock, struct sockaddr *addr,
-			      int *addrlen);
-extern int kernel_getpeername(struct socket *sock, struct sockaddr *addr,
-			      int *addrlen);
-extern int kernel_getsockopt(struct socket *sock, int level, int optname,
-			     char *optval, int *optlen);
-extern int kernel_setsockopt(struct socket *sock, int level, int optname,
-			     char *optval, unsigned int optlen);
-extern int kernel_sendpage(struct socket *sock, struct page *page, int offset,
-			   size_t size, int flags);
-extern int kernel_sock_ioctl(struct socket *sock, int cmd, unsigned long arg);
-extern int kernel_sock_shutdown(struct socket *sock,
-				enum sock_shutdown_cmd how);
+int kernel_sendmsg(struct socket *sock, struct msghdr *msg, struct kvec *vec,
+		   size_t num, size_t len);
+int kernel_recvmsg(struct socket *sock, struct msghdr *msg, struct kvec *vec,
+		   size_t num, size_t len, int flags);
+
+int kernel_bind(struct socket *sock, struct sockaddr *addr, int addrlen);
+int kernel_listen(struct socket *sock, int backlog);
+int kernel_accept(struct socket *sock, struct socket **newsock, int flags);
+int kernel_connect(struct socket *sock, struct sockaddr *addr, int addrlen,
+		   int flags);
+int kernel_getsockname(struct socket *sock, struct sockaddr *addr,
+		       int *addrlen);
+int kernel_getpeername(struct socket *sock, struct sockaddr *addr,
+		       int *addrlen);
+int kernel_getsockopt(struct socket *sock, int level, int optname, char *optval,
+		      int *optlen);
+int kernel_setsockopt(struct socket *sock, int level, int optname, char *optval,
+		      unsigned int optlen);
+int kernel_sendpage(struct socket *sock, struct page *page, int offset,
+		    size_t size, int flags);
+int kernel_sock_ioctl(struct socket *sock, int cmd, unsigned long arg);
+int kernel_sock_shutdown(struct socket *sock, enum sock_shutdown_cmd how);
 
 #define MODULE_ALIAS_NETPROTO(proto) \
 	MODULE_ALIAS("net-pf-" __stringify(proto))
