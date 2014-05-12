@@ -481,7 +481,7 @@ version_h := include/generated/uapi/linux/version.h
 
 no-dot-config-targets := clean mrproper distclean \
 			 cscope gtags TAGS tags help %docs check% coccicheck \
-			 $(version_h) headers_% archheaders archscripts \
+			 $(version_h) headers_% archscripts \
 			 kernelversion %src-pkg
 
 config-targets := 0
