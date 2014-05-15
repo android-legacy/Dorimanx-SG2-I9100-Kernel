@@ -214,19 +214,14 @@ int tty_buffer_request_room(struct tty_struct *tty, size_t size)
 
 	if (left < size) {
 		/* This is the slow path - looking for new buffers to use */
-		if ((n = tty_buffer_alloc(port, size)) != NULL) {
-			n->flags = flags;
-			buf->tail = n;
-			b->commit = b->used;
-			/* paired w/ barrier in flush_to_ldisc(); ensures the
-			 * latest commit value can be read before the head is
-			 * advanced to the next buffer
-			 */
-			smp_wmb();
-			b->next = n;
-		} else if (change)
-			size = 0;
-		else
+		if ((n = tty_buffer_find(tty, size)) != NULL) {
+			if (b != NULL) {
+				b->next = n;
+				b->commit = b->used;
+			} else
+				tty->buf.head = n;
+			tty->buf.tail = n;
+		} else
 			size = left;
 	}
 
@@ -316,14 +311,18 @@ EXPORT_SYMBOL(tty_insert_flip_string_flags);
  *	Takes any pending buffers and transfers their ownership to the
  *	ldisc side of the queue. It then schedules those characters for
  *	processing by the line discipline.
+ *
+ *	Locking: Takes tty->buf.lock
  */
 
 void tty_schedule_flip(struct tty_struct *tty)
 {
-	struct tty_bufhead *buf = &port->buf;
-
-	buf->tail->commit = buf->tail->used;
-	schedule_work(&buf->work);
+	unsigned long flags;
+	spin_lock_irqsave(&tty->buf.lock, flags);
+	if (tty->buf.tail != NULL)
+		tty->buf.tail->commit = tty->buf.tail->used;
+	spin_unlock_irqrestore(&tty->buf.lock, flags);
+	schedule_work(&tty->buf.work);
 }
 EXPORT_SYMBOL(tty_schedule_flip);
 
@@ -411,30 +410,39 @@ static void flush_to_ldisc(struct work_struct *work)
 	if (disc == NULL)	/*  !TTY_LDISC */
 		return;
 
-	mutex_lock(&buf->lock);
+	spin_lock_irqsave(&tty->buf.lock, flags);
 
-	while (1) {
-		struct tty_buffer *head = buf->head;
-		struct tty_buffer *next;
-		int count;
+	if (!test_and_set_bit(TTY_FLUSHING, &tty->flags)) {
+		struct tty_buffer *head;
+		while ((head = tty->buf.head) != NULL) {
+			int count;
+			char *char_buf;
+			unsigned char *flag_buf;
 
-		/* Ldisc or user is trying to gain exclusive access */
-		if (atomic_read(&buf->priority))
-			break;
-
-		next = head->next;
-		/* paired w/ barrier in __tty_buffer_request_room();
-		 * ensures commit value read is not stale if the head
-		 * is advancing to the next buffer
-		 */
-		smp_rmb();
-		count = head->commit - head->read;
-		if (!count) {
-			if (next == NULL)
+			count = head->commit - head->read;
+			if (!count) {
+				if (head->next == NULL)
+					break;
+				tty->buf.head = head->next;
+				tty_buffer_free(tty, head);
+				continue;
+			}
+			/* Ldisc or user is trying to flush the buffers
+			   we are feeding to the ldisc, stop feeding the
+			   line discipline as we want to empty the queue */
+			if (test_bit(TTY_FLUSHPENDING, &tty->flags))
 				break;
-			buf->head = next;
-			tty_buffer_free(port, head);
-			continue;
+			if (!tty->receive_room)
+				break;
+			if (count > tty->receive_room)
+				count = tty->receive_room;
+			char_buf = head->char_buf_ptr + head->read;
+			flag_buf = head->flag_buf_ptr + head->read;
+			head->read += count;
+			spin_unlock_irqrestore(&tty->buf.lock, flags);
+			disc->ops->receive_buf(tty, char_buf,
+							flag_buf, count);
+			spin_lock_irqsave(&tty->buf.lock, flags);
 		}
 		clear_bit(TTY_FLUSHING, &tty->flags);
 	}
@@ -461,15 +469,15 @@ static void flush_to_ldisc(struct work_struct *work)
  */
 void tty_flush_to_ldisc(struct tty_struct *tty)
 {
-	flush_work(&tty->port->buf.work);
+	flush_work(&tty->buf.work);
 }
 
 /**
  *	tty_flip_buffer_push	-	terminal
  *	@tty: tty to push
  *
- *	Queue a push of the terminal flip buffers to the line discipline.
- *	Can be called from IRQ/atomic context.
+ *	Queue a push of the terminal flip buffers to the line discipline. This
+ *	function must not be called from IRQ context if tty->low_latency is set.
  *
  *	In the event of the queue being busy for flipping the work will be
  *	held off and retried later.
@@ -479,7 +487,16 @@ void tty_flush_to_ldisc(struct tty_struct *tty)
 
 void tty_flip_buffer_push(struct tty_struct *tty)
 {
-	tty_schedule_flip(port);
+	unsigned long flags;
+	spin_lock_irqsave(&tty->buf.lock, flags);
+	if (tty->buf.tail != NULL)
+		tty->buf.tail->commit = tty->buf.tail->used;
+	spin_unlock_irqrestore(&tty->buf.lock, flags);
+
+	if (tty->low_latency)
+		flush_to_ldisc(&tty->buf.work);
+	else
+		schedule_work(&tty->buf.work);
 }
 EXPORT_SYMBOL(tty_flip_buffer_push);
 
