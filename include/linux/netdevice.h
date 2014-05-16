@@ -1017,6 +1017,35 @@ struct net_device_ops {
 						struct netlink_callback *cb,
 						struct net_device *dev,
 						int idx);
+
+	int			(*ndo_bridge_setlink)(struct net_device *dev,
+						      struct nlmsghdr *nlh);
+	int			(*ndo_bridge_getlink)(struct sk_buff *skb,
+						      u32 pid, u32 seq,
+						      struct net_device *dev,
+						      u32 filter_mask);
+	int			(*ndo_bridge_dellink)(struct net_device *dev,
+						      struct nlmsghdr *nlh);
+	int			(*ndo_change_carrier)(struct net_device *dev,
+						      bool new_carrier);
+	int			(*ndo_get_phys_port_id)(struct net_device *dev,
+							struct netdev_phys_port_id *ppid);
+	void			(*ndo_add_vxlan_port)(struct  net_device *dev,
+						      sa_family_t sa_family,
+						      __be16 port);
+	void			(*ndo_del_vxlan_port)(struct  net_device *dev,
+						      sa_family_t sa_family,
+						      __be16 port);
+
+	void*			(*ndo_dfwd_add_station)(struct net_device *pdev,
+							struct net_device *dev);
+	void			(*ndo_dfwd_del_station)(struct net_device *pdev,
+							void *priv);
+
+	netdev_tx_t		(*ndo_dfwd_start_xmit) (struct sk_buff *skb,
+							struct net_device *dev,
+							void *priv);
+	int			(*ndo_get_lock_subclass)(struct net_device *dev);
 };
 
 /*
@@ -2478,7 +2507,12 @@ static inline void netif_addr_lock(struct net_device *dev)
 
 static inline void netif_addr_lock_nested(struct net_device *dev)
 {
-	spin_lock_nested(&dev->addr_list_lock, SINGLE_DEPTH_NESTING);
+	int subclass = SINGLE_DEPTH_NESTING;
+
+	if (dev->netdev_ops->ndo_get_lock_subclass)
+		subclass = dev->netdev_ops->ndo_get_lock_subclass(dev);
+
+	spin_lock_nested(&dev->addr_list_lock, subclass);
 }
 
 static inline void netif_addr_lock_bh(struct net_device *dev)
