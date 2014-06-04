@@ -293,6 +293,8 @@ bool __net_get_random_once(void *buf, int nbytes, bool *done,
 		___ret;							\
 	})
 
+#define net_random()		random32()
+
 int kernel_sendmsg(struct socket *sock, struct msghdr *msg, struct kvec *vec,
 		   size_t num, size_t len);
 int kernel_recvmsg(struct socket *sock, struct msghdr *msg, struct kvec *vec,

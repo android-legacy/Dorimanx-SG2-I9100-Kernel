@@ -27,19 +27,19 @@ fi;
 
 export PARENT_DIR=`readlink -f ${KERNELDIR}/..`;
 export INITRAMFS_SOURCE=`readlink -f ${KERNELDIR}/../initramfs3`;
-export INITRAMFS_TMP=/tmp/initramfs_source;
+export INITRAMFS_TMP=~/tmp/initramfs_source;
 
 # kernel
 export ARCH=arm;
 export USE_SEC_FIPS_MODE=true;
-export KERNEL_CONFIG=dorimanx_defconfig;
+export KERNEL_CONFIG=dorimax_defconfig;
 
 # build script
 export USER=`whoami`;
 export HOST=`uname -n`;
 export TMPFILE=`mktemp -t`;
 
-chmod -R 777 /tmp;
+chmod -R 777 ~/tmp;
 
 # system compiler
 # gcc x.x.x
@@ -47,7 +47,7 @@ chmod -R 777 /tmp;
 
 # gcc 4.8.3 (Linaro 2013.x)
 export CROSS_COMPILE=$KERNELDIR/android-toolchain/bin/arm-eabi-;
-
+#export CROSS_COMPILE=/usr/bin/arm-linux-gnueabi-;
 # importing PATCH for GCC depend on GCC version
 GCCVERSION=`./scripts/gcc-version.sh ${CROSS_COMPILE}gcc`;
 
@@ -90,7 +90,7 @@ if [ $HOST == "dorimanx-virtual-machine" ] || [ $HOST == "dorimanx" ]; then
 else
 	NR_CPUS=$(expr `grep processor /proc/cpuinfo | wc -l`);
 	if [ "$NR_CPUS" -lt 2 ]; then
-		(( NR_CPUS=2 ))
+		(( NR_CPUS=16 ))
 	fi;
 	echo "not dorimanx system detected, setting $NR_CPUS build threads"
 fi;

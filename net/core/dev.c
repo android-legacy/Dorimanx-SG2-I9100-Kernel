@@ -1112,7 +1112,7 @@ void netdev_state_change(struct net_device *dev)
 {
 	if (dev->flags & IFF_UP) {
 		call_netdevice_notifiers(NETDEV_CHANGE, dev);
-		rtmsg_ifinfo(RTM_NEWLINK, dev, 0);
+		rtmsg_ifinfo(RTM_NEWLINK, dev, 0, GFP_KERNEL);
 	}
 }
 EXPORT_SYMBOL(netdev_state_change);
@@ -1224,7 +1224,7 @@ int dev_open(struct net_device *dev)
 	if (ret < 0)
 		return ret;
 
-	rtmsg_ifinfo(RTM_NEWLINK, dev, IFF_UP|IFF_RUNNING);
+	rtmsg_ifinfo(RTM_NEWLINK, dev, IFF_UP|IFF_RUNNING, GFP_KERNEL);
 	call_netdevice_notifiers(NETDEV_UP, dev);
 
 	return ret;
@@ -1297,7 +1297,7 @@ static int dev_close_many(struct list_head *head)
 	__dev_close_many(head);
 
 	list_for_each_entry(dev, head, unreg_list) {
-		rtmsg_ifinfo(RTM_NEWLINK, dev, IFF_UP|IFF_RUNNING);
+		rtmsg_ifinfo(RTM_NEWLINK, dev, IFF_UP|IFF_RUNNING, GFP_KERNEL);
 		call_netdevice_notifiers(NETDEV_DOWN, dev);
 	}
 
@@ -1977,71 +1977,6 @@ out:
 }
 EXPORT_SYMBOL(skb_checksum_help);
 
-/**
- *	skb_gso_segment - Perform segmentation on skb.
- *	@skb: buffer to segment
- *	@features: features for the output path (see dev->features)
- *
- *	This function segments the given skb and returns a list of segments.
- *
- *	It may return NULL if the skb requires no segmentation.  This is
- *	only possible when GSO is used for verifying header integrity.
- */
-struct sk_buff *skb_gso_segment(struct sk_buff *skb,
-	netdev_features_t features)
-{
-	struct sk_buff *segs = ERR_PTR(-EPROTONOSUPPORT);
-	struct packet_type *ptype;
-	__be16 type = skb->protocol;
-	int vlan_depth = skb->mac_len;
-
-	while (type == htons(ETH_P_8021Q)) {
-		struct vlan_hdr *vh;
-
-		if (unlikely(!pskb_may_pull(skb, vlan_depth + VLAN_HLEN)))
-			return ERR_PTR(-EINVAL);
-
-		vh = (struct vlan_hdr *)(skb->data + vlan_depth);
-		type = vh->h_vlan_encapsulated_proto;
-		vlan_depth += VLAN_HLEN;
-	}
-
-	skb_reset_mac_header(skb);
-	skb->mac_len = skb->network_header - skb->mac_header;
-	__skb_pull(skb, skb->mac_len);
-
-	if (unlikely(skb->ip_summed != CHECKSUM_PARTIAL)) {
-		skb_warn_bad_offload(skb);
-
-		if (skb_header_cloned(skb) &&
-		    (err = pskb_expand_head(skb, 0, 0, GFP_ATOMIC)))
-			return ERR_PTR(err);
-	}
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(ptype,
-			&ptype_base[ntohs(type) & PTYPE_HASH_MASK], list) {
-		if (ptype->type == type && !ptype->dev && ptype->gso_segment) {
-			if (unlikely(skb->ip_summed != CHECKSUM_PARTIAL)) {
-				err = ptype->gso_send_check(skb);
-				segs = ERR_PTR(err);
-				if (err || skb_gso_ok(skb, features))
-					break;
-				__skb_push(skb, (skb->data -
-						 skb_network_header(skb)));
-			}
-			segs = ptype->gso_segment(skb, features);
-			break;
-		}
-	}
-	rcu_read_unlock();
-
-	__skb_push(skb, skb->data - skb_mac_header(skb));
-
-	return segs;
-}
-EXPORT_SYMBOL(skb_gso_segment);
-
 /* Take action when hardware reception checksum errors are detected. */
 #ifdef CONFIG_BUG
 void netdev_rx_csum_fault(struct net_device *dev)
@@ -2138,16 +2073,6 @@ static int dev_gso_segment(struct sk_buff *skb, netdev_features_t features)
 	return 0;
 }
 
-static bool can_checksum_protocol(netdev_features_t features, __be16 protocol)
-{
-	return ((features & NETIF_F_GEN_CSUM) ||
-		((features & NETIF_F_V4_CSUM) &&
-		 protocol == htons(ETH_P_IP)) ||
-		((features & NETIF_F_V6_CSUM) &&
-		 protocol == htons(ETH_P_IPV6)) ||
-		((features & NETIF_F_FCOE_CRC) &&
-		 protocol == htons(ETH_P_FCOE)));
-}
 
 static netdev_features_t harmonize_features(struct sk_buff *skb,
 	__be16 protocol, netdev_features_t features)
@@ -4182,80 +4107,6 @@ static inline struct net_device *dev_from_same_bucket(struct seq_file *seq, loff
 	return NULL;
 }
 
-/**
- * netdev_lower_get_next - Get the next device from the lower neighbour
- *                         list
- * @dev: device
- * @iter: list_head ** of the current position
- *
- * Gets the next netdev_adjacent from the dev's lower neighbour
- * list, starting from iter position. The caller must hold RTNL lock or
- * its own locking that guarantees that the neighbour lower
- * list will remain unchainged.
- */
-void *netdev_lower_get_next(struct net_device *dev, struct list_head **iter)
-{
-	struct netdev_adjacent *lower;
-
-	lower = list_entry((*iter)->next, struct netdev_adjacent, list);
-
-	if (&lower->list == &dev->adj_list.lower)
-		return NULL;
-
-	*iter = &lower->list;
-
-	return lower->dev;
-}
-EXPORT_SYMBOL(netdev_lower_get_next);
-
-/**
- * netdev_lower_get_first_private_rcu - Get the first ->private from the
- *				       lower neighbour list, RCU
- *				       variant
- * @dev: device
- *
- * Gets the first netdev_adjacent->private from the dev's lower neighbour
- * list. The caller must hold RCU read lock.
- */
-void *netdev_lower_get_first_private_rcu(struct net_device *dev)
-{
-	struct net_device *dev;
-	unsigned int bucket;
-
-	do {
-		dev = dev_from_same_bucket(seq, pos);
-		if (dev)
-			return dev;
-
-		bucket = get_bucket(*pos) + 1;
-		*pos = set_bucket_offset(bucket, 1);
-	} while (bucket < NETDEV_HASHENTRIES);
-
-	return NULL;
-}
-
-/*
- *	This is invoked by the /proc filesystem handler to display a device
- *	in detail.
- */
-void *dev_seq_start(struct seq_file *seq, loff_t *pos)
-	__acquires(RCU)
-{
-	rcu_read_lock();
-	if (!*pos)
-		return SEQ_START_TOKEN;
-
-	if (get_bucket(*pos) >= NETDEV_HASHENTRIES)
-		return NULL;
-
-	return dev_from_bucket(seq, pos);
-}
-
-void *dev_seq_next(struct seq_file *seq, void *v, loff_t *pos)
-{
-	++*pos;
-	return dev_from_bucket(seq, pos);
-}
 
 void dev_seq_stop(struct seq_file *seq, void *v)
 	__releases(RCU)
@@ -4342,47 +4193,6 @@ static int softnet_seq_show(struct seq_file *seq, void *v)
 		   sd->cpu_collision, sd->received_rps);
 	return 0;
 }
-
-static const struct seq_operations dev_seq_ops = {
-	.start = dev_seq_start,
-	.next  = dev_seq_next,
-	.stop  = dev_seq_stop,
-	.show  = dev_seq_show,
-};
-
-static int dev_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &dev_seq_ops,
-			    sizeof(struct seq_net_private));
-}
-
-static const struct file_operations dev_seq_fops = {
-	.owner	 = THIS_MODULE,
-	.open    = dev_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
-
-static const struct seq_operations softnet_seq_ops = {
-	.start = softnet_seq_start,
-	.next  = softnet_seq_next,
-	.stop  = softnet_seq_stop,
-	.show  = softnet_seq_show,
-};
-
-static int softnet_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &softnet_seq_ops);
-}
-
-static const struct file_operations softnet_seq_fops = {
-	.owner	 = THIS_MODULE,
-	.open    = softnet_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release,
-};
 
 static void *ptype_get_idx(loff_t pos)
 {
@@ -4488,32 +4298,6 @@ static const struct file_operations ptype_seq_fops = {
 	.release = seq_release_net,
 };
 
-
-static int __net_init dev_proc_net_init(struct net *net)
-{
-	int rc = -ENOMEM;
-
-	if (!proc_net_fops_create(net, "dev", S_IRUGO, &dev_seq_fops))
-		goto out;
-	if (!proc_net_fops_create(net, "softnet_stat", S_IRUGO, &softnet_seq_fops))
-		goto out_dev;
-	if (!proc_net_fops_create(net, "ptype", S_IRUGO, &ptype_seq_fops))
-		goto out_softnet;
-
-	if (wext_proc_init(net))
-		goto out_ptype;
-	rc = 0;
-out:
-	return rc;
-out_ptype:
-	proc_net_remove(net, "ptype");
-out_softnet:
-	proc_net_remove(net, "softnet_stat");
-out_dev:
-	proc_net_remove(net, "dev");
-	goto out;
-}
-
 static void __net_exit dev_proc_net_exit(struct net *net)
 {
 	wext_proc_exit(net);
@@ -4522,20 +4306,7 @@ static void __net_exit dev_proc_net_exit(struct net *net)
 	proc_net_remove(net, "softnet_stat");
 	proc_net_remove(net, "dev");
 }
-
-static struct pernet_operations __net_initdata dev_proc_ops = {
-	.init = dev_proc_net_init,
-	.exit = dev_proc_net_exit,
-};
-
-static int __init dev_proc_init(void)
-{
-	return register_pernet_subsys(&dev_proc_ops);
-}
-#else
-#define dev_proc_init() 0
-#endif	/* CONFIG_PROC_FS */
-
+#endif
 
 /**
  *	netdev_set_master	-	set up master pointer
@@ -4591,7 +4362,7 @@ int netdev_set_bond_master(struct net_device *slave, struct net_device *master)
 	else
 		slave->flags &= ~IFF_SLAVE;
 
-	rtmsg_ifinfo(RTM_NEWLINK, slave, IFF_SLAVE);
+	rtmsg_ifinfo(RTM_NEWLINK, slave, IFF_SLAVE, GFP_KERNEL);
 	return 0;
 }
 EXPORT_SYMBOL(netdev_set_bond_master);
@@ -4910,7 +4681,7 @@ int dev_change_flags(struct net_device *dev, unsigned int flags)
 
 	changes = old_flags ^ dev->flags;
 	if (changes)
-		rtmsg_ifinfo(RTM_NEWLINK, dev, changes);
+		rtmsg_ifinfo(RTM_NEWLINK, dev, changes, GFP_KERNEL);
 
 	__dev_notify_flags(dev, old_flags);
 	return ret;
@@ -5433,7 +5204,7 @@ static void rollback_registered_many(struct list_head *head)
 
 		if (!dev->rtnl_link_ops ||
 		    dev->rtnl_link_state == RTNL_LINK_INITIALIZED)
-			rtmsg_ifinfo(RTM_DELLINK, dev, ~0U);
+			rtmsg_ifinfo(RTM_DELLINK, dev, ~0U, GFP_KERNEL);
 
 		/*
 		 *	Flush the unicast and multicast chains
@@ -5790,7 +5561,7 @@ int register_netdevice(struct net_device *dev)
 	 */
 	if (!dev->rtnl_link_ops ||
 	    dev->rtnl_link_state == RTNL_LINK_INITIALIZED)
-		rtmsg_ifinfo(RTM_NEWLINK, dev, ~0U);
+		rtmsg_ifinfo(RTM_NEWLINK, dev, ~0U, GFP_KERNEL);
 
 out:
 	return ret;
@@ -6386,7 +6157,7 @@ int dev_change_net_namespace(struct net_device *dev, struct net *net, const char
 	call_netdevice_notifiers(NETDEV_UNREGISTER, dev);
 	rcu_barrier();
 	call_netdevice_notifiers(NETDEV_UNREGISTER_FINAL, dev);
-	rtmsg_ifinfo(RTM_DELLINK, dev, ~0U);
+	rtmsg_ifinfo(RTM_DELLINK, dev, ~0U, GFP_KERNEL);
 
 	/*
 	 *	Flush the unicast and multicast chains
@@ -6419,7 +6190,7 @@ int dev_change_net_namespace(struct net_device *dev, struct net *net, const char
 	 *	Prevent userspace races by waiting until the network
 	 *	device is fully setup before sending notifications.
 	 */
-	rtmsg_ifinfo(RTM_NEWLINK, dev, ~0U);
+	rtmsg_ifinfo(RTM_NEWLINK, dev, ~0U, GFP_KERNEL);
 
 	synchronize_net();
 	err = 0;

@@ -166,6 +166,7 @@ struct hid_item {
 #define HID_UP_MSVENDOR		0xff000000
 #define HID_UP_CUSTOM		0x00ff0000
 #define HID_UP_LOGIVENDOR	0xffbc0000
+#define HID_UP_SENSOR		0x00200000
 
 #define HID_USAGE		0x0000ffff
 
@@ -285,6 +286,15 @@ struct hid_item {
 #define HID_QUIRK_NO_INIT_REPORTS		0x20000000
 #define HID_QUIRK_NO_IGNORE			0x40000000
 #define HID_QUIRK_NO_INPUT_SYNC			0x80000000
+
+/*
+ * HID device groups
+ */
+#define HID_GROUP_GENERIC			0x0001
+#define HID_GROUP_MULTITOUCH			0x0002
+#define HID_GROUP_SENSOR_HUB			0x0003
+#define HID_GROUP_MULTITOUCH_WIN_8		0x0004
+
 
 /*
  * This is the global environment of the parser. This information is
@@ -430,6 +440,8 @@ struct hid_driver;
 struct hid_ll_driver;
 
 struct hid_device {							/* device report descriptor */
+	__u8 *dev_rdesc;
+	unsigned dev_rsize;
 	__u8 *rdesc;
 	unsigned rsize;
 	struct hid_collection *collection;				/* List of HID collections */
@@ -515,6 +527,8 @@ static inline void hid_set_drvdata(struct hid_device *hdev, void *data)
 #define HID_GLOBAL_STACK_SIZE 4
 #define HID_COLLECTION_STACK_SIZE 4
 
+#define HID_SCAN_FLAG_MT_WIN_8			0x00000001
+
 struct hid_parser {
 	struct hid_global     global;
 	struct hid_global     global_stack[HID_GLOBAL_STACK_SIZE];
@@ -523,6 +537,7 @@ struct hid_parser {
 	unsigned              collection_stack[HID_COLLECTION_STACK_SIZE];
 	unsigned              collection_stack_ptr;
 	struct hid_device    *device;
+	unsigned              scan_flags;
 };
 
 struct hid_class_descriptor {

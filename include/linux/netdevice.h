@@ -717,6 +717,36 @@ struct netdev_tc_txq {
 	u16 offset;
 };
 
+#if defined(CONFIG_FCOE) || defined(CONFIG_FCOE_MODULE)
+/*
+ * This structure is to hold information about the device
+ * configured to run FCoE protocol stack.
+ */
+struct netdev_fcoe_hbainfo {
+	char	manufacturer[64];
+	char	serial_number[64];
+	char	hardware_version[64];
+	char	driver_version[64];
+	char	optionrom_version[64];
+	char	firmware_version[64];
+	char	model[256];
+	char	model_description[256];
+};
+#endif
+
+#define MAX_PHYS_PORT_ID_LEN 32
+
+/* This structure holds a unique identifier to identify the
+ * physical port used by a netdevice.
+ */
+struct netdev_phys_port_id {
+	unsigned char id[MAX_PHYS_PORT_ID_LEN];
+	unsigned char id_len;
+};
+
+typedef u16 (*select_queue_fallback_t)(struct net_device *dev,
+				       struct sk_buff *skb);
+
 /*
  * This structure defines the management hooks for network devices.
  * The following hooks can be defined; unless noted otherwise, they are
@@ -1067,10 +1097,9 @@ struct net_device {
 	 */
 	char			name[IFNAMSIZ];
 
-	struct pm_qos_request	pm_qos_req;
-
-	/* device name hash chain */
+	/* device name hash chain, please keep it close to name[] */
 	struct hlist_node	name_hlist;
+
 	/* snmp alias */
 	char 			*ifalias;
 
@@ -1081,7 +1110,7 @@ struct net_device {
 	unsigned long		mem_end;	/* shared mem end	*/
 	unsigned long		mem_start;	/* shared mem start	*/
 	unsigned long		base_addr;	/* device I/O address	*/
-	unsigned int		irq;		/* device IRQ number	*/
+	int			irq;		/* device IRQ number	*/
 
 	/*
 	 *	Some hardware also needs these fields, but they are not
@@ -1093,6 +1122,20 @@ struct net_device {
 	struct list_head	dev_list;
 	struct list_head	napi_list;
 	struct list_head	unreg_list;
+	struct list_head	close_list;
+
+	/* directly linked devices, like slaves for bonding */
+	struct {
+		struct list_head upper;
+		struct list_head lower;
+	} adj_list;
+
+	/* all linked devices, *including* neighbours */
+	struct {
+		struct list_head upper;
+		struct list_head lower;
+	} all_adj_list;
+
 
 	/* currently active device features */
 	netdev_features_t	features;
@@ -1102,15 +1145,27 @@ struct net_device {
 	netdev_features_t	wanted_features;
 	/* mask of features inheritable by VLAN devices */
 	netdev_features_t	vlan_features;
+	/* mask of features inherited by encapsulating devices
+	 * This field indicates what encapsulation offloads
+	 * the hardware is capable of doing, and drivers will
+	 * need to set them appropriately.
+	 */
+	netdev_features_t	hw_enc_features;
+	/* mask of fetures inheritable by MPLS */
+	netdev_features_t	mpls_features;
 
 	/* Interface index. Unique device identifier	*/
 	int			ifindex;
 	int			iflink;
 
 	struct net_device_stats	stats;
-	atomic_long_t		rx_dropped; /* dropped packets by core network
-					     * Do not use this in drivers.
-					     */
+
+	/* dropped packets by core network, Do not use this in drivers */
+	atomic_long_t		rx_dropped;
+	atomic_long_t		tx_dropped;
+
+	/* Stats to monitor carrier on<->off transitions */
+	atomic_t		carrier_changes;
 
 #ifdef CONFIG_WIRELESS_EXT
 	/* List of functions to handle Wireless Extensions (instead of ioctl).
@@ -1122,6 +1177,7 @@ struct net_device {
 	/* Management operations */
 	const struct net_device_ops *netdev_ops;
 	const struct ethtool_ops *ethtool_ops;
+	const struct forwarding_accel_ops *fwd_ops;
 
 	/* Hardware header description */
 	const struct header_ops *header_ops;
@@ -1153,12 +1209,29 @@ struct net_device {
 	unsigned char		perm_addr[MAX_ADDR_LEN]; /* permanent hw address */
 	unsigned char		addr_assign_type; /* hw address assignment type */
 	unsigned char		addr_len;	/* hardware address length	*/
-	unsigned char		neigh_priv_len;
-	unsigned short          dev_id;		/* for shared network cards */
-
+	unsigned short		neigh_priv_len;
+	unsigned short          dev_id;		/* Used to differentiate devices
+						 * that share the same link
+						 * layer address
+						 */
+	unsigned short          dev_port;	/* Used to differentiate
+						 * devices that share the same
+						 * function
+						 */
 	spinlock_t		addr_list_lock;
+
+	struct net_device	*master; /* Pointer to master device of a group,
+					  * which this device is member of.
+					*/
 	struct netdev_hw_addr_list	uc;	/* Unicast mac addresses */
 	struct netdev_hw_addr_list	mc;	/* Multicast mac addresses */
+	struct netdev_hw_addr_list	dev_addrs; /* list of device
+						    * hw addresses
+						    */
+#ifdef CONFIG_SYSFS
+	struct kset		*queues_kset;
+#endif
+
 	bool			uc_promisc;
 	unsigned int		promiscuity;
 	unsigned int		allmulti;
@@ -1166,17 +1239,19 @@ struct net_device {
 
 	/* Protocol specific pointers */
 
-#if defined(CONFIG_VLAN_8021Q) || defined(CONFIG_VLAN_8021Q_MODULE)
-	struct vlan_group __rcu	*vlgrp;		/* VLAN group */
+#if IS_ENABLED(CONFIG_VLAN_8021Q)
+	struct vlan_info __rcu	*vlan_info;	/* VLAN info */
 #endif
-#ifdef CONFIG_NET_DSA
-	void			*dsa_ptr;	/* dsa specific data */
+#if IS_ENABLED(CONFIG_NET_DSA)
+	struct dsa_switch_tree	*dsa_ptr;	/* dsa specific data */
+#endif
+#if IS_ENABLED(CONFIG_TIPC)
+	struct tipc_bearer __rcu *tipc_ptr;	/* TIPC specific data */
 #endif
 	void 			*atalk_ptr;	/* AppleTalk link 	*/
 	struct in_device __rcu	*ip_ptr;	/* IPv4 specific data	*/
 	struct dn_dev __rcu     *dn_ptr;        /* DECnet specific data */
 	struct inet6_dev __rcu	*ip6_ptr;       /* IPv6 specific data */
-	void			*ec_ptr;	/* Econet specific data	*/
 	void			*ax25_ptr;	/* AX.25 specific data */
 	struct wireless_dev	*ieee80211_ptr;	/* IEEE 802.11 specific data,
 						   assign before registering */
@@ -1184,33 +1259,15 @@ struct net_device {
 /*
  * Cache lines mostly used on receive path (including eth_type_trans())
  */
-	unsigned long		last_rx;	/* Time of last Rx
-						 * This should not be set in
-						 * drivers, unless really needed,
-						 * because network stack (bonding)
-						 * use it if/when necessary, to
-						 * avoid dirtying this cache line.
-						 */
-
-	struct net_device	*master; /* Pointer to master device of a group,
-					  * which this device is member of.
-					  */
+	unsigned long		last_rx;	/* Time of last Rx */
 
 	/* Interface address info used in eth_type_trans() */
 	unsigned char		*dev_addr;	/* hw address, (before bcast
 						   because most packets are
 						   unicast) */
 
-	struct netdev_hw_addr_list	dev_addrs; /* list of device
-						      hw addresses */
-
-	unsigned char		broadcast[MAX_ADDR_LEN];	/* hw bcast add	*/
 
 #ifdef CONFIG_SYSFS
-	struct kset		*queues_kset;
-#endif
-
-#ifdef CONFIG_RPS
 	struct netdev_rx_queue	*_rx;
 
 	/* Number of RX queues allocated at register_netdev() time */
@@ -1219,18 +1276,14 @@ struct net_device {
 	/* Number of RX queues currently active in device */
 	unsigned int		real_num_rx_queues;
 
-#ifdef CONFIG_RFS_ACCEL
-	/* CPU reverse-mapping for RX completion interrupts, indexed
-	 * by RX queue number.  Assigned by driver.  This must only be
-	 * set if the ndo_rx_flow_steer operation is defined. */
-	struct cpu_rmap		*rx_cpu_rmap;
-#endif
 #endif
 
 	rx_handler_func_t __rcu	*rx_handler;
 	void __rcu		*rx_handler_data;
 
 	struct netdev_queue __rcu *ingress_queue;
+	unsigned char		broadcast[MAX_ADDR_LEN];	/* hw bcast add	*/
+
 
 /*
  * Cache lines mostly used on transmit path
@@ -1251,6 +1304,12 @@ struct net_device {
 
 #ifdef CONFIG_XPS
 	struct xps_dev_maps __rcu *xps_maps;
+#endif
+#ifdef CONFIG_RFS_ACCEL
+	/* CPU reverse-mapping for RX completion interrupts, indexed
+	 * by RX queue number.  Assigned by driver.  This must only be
+	 * set if the ndo_rx_flow_steer operation is defined. */
+	struct cpu_rmap		*rx_cpu_rmap;
 #endif
 
 	/* These may be needed for future network-power-down code. */
@@ -1294,7 +1353,7 @@ struct net_device {
 	void (*destructor)(struct net_device *dev);
 
 #ifdef CONFIG_NETPOLL
-	struct netpoll_info	*npinfo;
+	struct netpoll_info __rcu	*npinfo;
 #endif
 
 #ifdef CONFIG_NET_NS
@@ -1306,16 +1365,21 @@ struct net_device {
 	union {
 		void				*ml_priv;
 		struct pcpu_lstats __percpu	*lstats; /* loopback stats */
-		struct pcpu_tstats __percpu	*tstats; /* tunnel stats */
+		struct pcpu_sw_netstats __percpu	*tstats;
 		struct pcpu_dstats __percpu	*dstats; /* dummy stats */
+		struct pcpu_vstats __percpu	*vstats; /* veth stats */
 	};
 	/* GARP */
 	struct garp_port __rcu	*garp_port;
+	/* MRP */
+	struct mrp_port __rcu	*mrp_port;
 
 	/* class/net/name entry */
 	struct device		dev;
 	/* space for optional device, statistics, and wireless sysfs groups */
 	const struct attribute_group *sysfs_groups[4];
+	/* space for optional per-rx queue attributes */
+	const struct attribute_group *sysfs_rx_queue_group;
 
 	/* rtnetlink link ops */
 	const struct rtnl_link_ops *rtnl_link_ops;
@@ -1334,11 +1398,11 @@ struct net_device {
 	struct netdev_tc_txq tc_to_txq[TC_MAX_QUEUE];
 	u8 prio_tc_map[TC_BITMASK + 1];
 
-#if defined(CONFIG_FCOE) || defined(CONFIG_FCOE_MODULE)
+#if IS_ENABLED(CONFIG_FCOE)
 	/* max exchange id for FCoE LRO by ddp */
 	unsigned int		fcoe_ddp_xid;
 #endif
-#if IS_ENABLED(CONFIG_NETPRIO_CGROUP)
+#if IS_ENABLED(CONFIG_CGROUP_NET_PRIO)
 	struct netprio_map __rcu *priomap;
 #endif
 	/* phy device may attach itself for hardware timestamping */
@@ -1348,6 +1412,8 @@ struct net_device {
 
 	/* group the device belongs to */
 	int group;
+
+	struct pm_qos_request	pm_qos_req;
 };
 #define to_net_dev(d) container_of(d, struct net_device, dev)
 
@@ -1536,6 +1602,9 @@ struct napi_gro_cb {
 
 	/* Used in ipv6_gro_receive() */
 	int	proto;
+
+	/* used in skb_gro_receive() slow path */
+	struct sk_buff *last;
 };
 
 #define NAPI_GRO_CB(skb) ((struct napi_gro_cb *)(skb)->cb)
@@ -1757,6 +1826,15 @@ static inline int dev_parse_header(const struct sk_buff *skb,
 	if (!dev->header_ops || !dev->header_ops->parse)
 		return 0;
 	return dev->header_ops->parse(skb, haddr);
+}
+
+static inline int dev_rebuild_header(struct sk_buff *skb)
+{
+	const struct net_device *dev = skb->dev;
+
+	if (!dev->header_ops || !dev->header_ops->rebuild)
+		return 0;
+	return dev->header_ops->rebuild(skb);
 }
 
 typedef int gifconf_func_t(struct net_device * dev, char __user * bufptr, int len);
@@ -2192,6 +2270,9 @@ extern int		dev_set_mtu(struct net_device *, int);
 extern void		dev_set_group(struct net_device *, int);
 extern int		dev_set_mac_address(struct net_device *,
 					    struct sockaddr *);
+int			dev_change_carrier(struct net_device *, bool new_carrier);
+int			dev_get_phys_port_id(struct net_device *dev,
+			 struct netdev_phys_port_id *ppid);
 extern int		dev_hard_start_xmit(struct sk_buff *skb,
 					    struct net_device *dev,
 					    struct netdev_queue *txq);
@@ -2718,6 +2799,12 @@ extern void		net_disable_timestamp(void);
 extern void *dev_seq_start(struct seq_file *seq, loff_t *pos);
 extern void *dev_seq_next(struct seq_file *seq, void *v, loff_t *pos);
 extern void dev_seq_stop(struct seq_file *seq, void *v);
+#endif
+
+#ifdef CONFIG_PROC_FS
+int __init dev_proc_init(void);
+#else
+#define dev_proc_init() 0
 #endif
 
 extern int netdev_class_create_file_ns(struct class_attribute *class_attr,

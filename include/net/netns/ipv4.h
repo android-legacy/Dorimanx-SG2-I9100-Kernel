@@ -74,5 +74,6 @@ struct netns_ipv4 {
 	struct fib_rules_ops	*mr_rules_ops;
 #endif
 #endif
+	int sysctl_ip_fwd_use_pmtu;
 };
 #endif

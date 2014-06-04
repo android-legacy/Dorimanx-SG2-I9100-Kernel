@@ -28,6 +28,7 @@
 #include <linux/skbuff.h>
 
 #include <net/inet_sock.h>
+#include <net/route.h>
 #include <net/snmp.h>
 #include <net/flow.h>
 
@@ -248,6 +249,19 @@ int ip_dont_fragment(struct sock *sk, struct dst_entry *dst)
 	return  inet_sk(sk)->pmtudisc == IP_PMTUDISC_DO ||
 		(inet_sk(sk)->pmtudisc == IP_PMTUDISC_WANT &&
 		 !(dst_metric_locked(dst, RTAX_MTU)));
+}
+
+static inline unsigned int ip_dst_mtu_maybe_forward(const struct dst_entry *dst,
+						    bool forwarding)
+{
+	struct net *net = dev_net(dst->dev);
+
+	if (net->ipv4.sysctl_ip_fwd_use_pmtu ||
+	    dst_metric_locked(dst, RTAX_MTU) ||
+	    !forwarding)
+		return dst_mtu(dst);
+
+	return min(dst->dev->mtu, IP_MAX_MTU);
 }
 
 extern void __ip_select_ident(struct iphdr *iph, struct dst_entry *dst, int more);

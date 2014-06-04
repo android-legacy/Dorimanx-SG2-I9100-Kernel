@@ -28,7 +28,7 @@
 #define MS_PRESENTER	0x04
 #define MS_RDESC	0x08
 #define MS_NOGET	0x10
-
+#define MS_DUPLICATE_USAGES	0x20
 /*
  * Microsoft Wireless Desktop Receiver (Model 1028) has
  * 'Usage Min/Max' where it ought to have 'Physical Min/Max'

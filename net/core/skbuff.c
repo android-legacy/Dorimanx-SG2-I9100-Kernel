@@ -2871,7 +2871,7 @@ EXPORT_SYMBOL_GPL(skb_segment);
 
 int skb_gro_receive(struct sk_buff **head, struct sk_buff *skb)
 {
-	struct sk_buff *p = *head;
+	struct sk_buff *lp, *p = *head;
 	struct sk_buff *nskb;
 	struct skb_shared_info *skbinfo = skb_shinfo(skb);
 	struct skb_shared_info *pinfo = skb_shinfo(p);
