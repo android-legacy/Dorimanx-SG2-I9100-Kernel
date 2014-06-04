@@ -611,9 +611,8 @@ static const struct net_device_ops vti_netdev_ops = {
 
 static void vti_dev_free(struct net_device *dev)
 {
-	dev->netdev_ops		= &vti_netdev_ops;
-	dev->type		= ARPHRD_TUNNEL;
-	ip_tunnel_setup(dev, vti_net_id);
+	free_percpu(dev->tstats);
+	free_netdev(dev);
 }
 
 static void vti_tunnel_setup(struct net_device *dev)
@@ -621,6 +620,7 @@ static void vti_tunnel_setup(struct net_device *dev)
 	dev->netdev_ops		= &vti_netdev_ops;
 	dev->destructor		= vti_dev_free;
 
+	dev->type		= ARPHRD_TUNNEL;
 	dev->hard_header_len	= LL_MAX_HEADER + sizeof(struct iphdr);
 	dev->mtu		= ETH_DATA_LEN;
 	dev->flags		= IFF_NOARP;
