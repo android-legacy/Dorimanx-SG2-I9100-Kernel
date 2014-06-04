@@ -1993,7 +1993,8 @@ struct sk_buff *skb_gso_segment(struct sk_buff *skb,
 	struct sk_buff *segs = ERR_PTR(-EPROTONOSUPPORT);
 	struct packet_type *ptype;
 	__be16 type = skb->protocol;
-	int vlan_depth = skb->mac_len;
+	int vlan_depth = ETH_HLEN;
+	int err;
 
 	while (type == htons(ETH_P_8021Q)) {
 		struct vlan_hdr *vh;
