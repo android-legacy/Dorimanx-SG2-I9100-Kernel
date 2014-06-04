@@ -406,8 +406,6 @@ static bool batadv_purge_orig_node(struct batadv_priv *bat_priv,
 				   struct batadv_orig_node *orig_node)
 {
 	struct batadv_neigh_node *best_neigh_node;
-	struct batadv_hard_iface *hard_iface;
-	bool changed_ifinfo, changed_neigh;
 
 	if (batadv_has_timed_out(orig_node->last_seen,
 				 2 * BATADV_PURGE_TIMEOUT)) {
@@ -422,38 +420,6 @@ static bool batadv_purge_orig_node(struct batadv_priv *bat_priv,
 			batadv_update_route(bat_priv, orig_node,
 					    best_neigh_node);
 	}
-	changed_ifinfo = batadv_purge_orig_ifinfo(bat_priv, orig_node);
-	changed_neigh = batadv_purge_orig_neighbors(bat_priv, orig_node);
-
-	if (!changed_ifinfo && !changed_neigh)
-		return false;
-
-	/* first for NULL ... */
-	best_neigh_node = batadv_find_best_neighbor(bat_priv, orig_node,
-						    BATADV_IF_DEFAULT);
-	batadv_update_route(bat_priv, orig_node, BATADV_IF_DEFAULT,
-			    best_neigh_node);
-	if (best_neigh_node)
-		batadv_neigh_node_free_ref(best_neigh_node);
-
-	/* ... then for all other interfaces. */
-	rcu_read_lock();
-	list_for_each_entry_rcu(hard_iface, &batadv_hardif_list, list) {
-		if (hard_iface->if_status != BATADV_IF_ACTIVE)
-			continue;
-
-		if (hard_iface->soft_iface != bat_priv->soft_iface)
-			continue;
-
-		best_neigh_node = batadv_find_best_neighbor(bat_priv,
-							    orig_node,
-							    hard_iface);
-		batadv_update_route(bat_priv, orig_node, hard_iface,
-				    best_neigh_node);
-		if (best_neigh_node)
-			batadv_neigh_node_free_ref(best_neigh_node);
-	}
-	rcu_read_unlock();
 
 	return false;
 }
