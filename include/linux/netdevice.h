@@ -717,6 +717,16 @@ struct netdev_tc_txq {
 	u16 offset;
 };
 
+#define MAX_PHYS_PORT_ID_LEN 32
+
+/* This structure holds a unique identifier to identify the
+ * physical port used by a netdevice.
+ */
+struct netdev_phys_port_id {
+	unsigned char id[MAX_PHYS_PORT_ID_LEN];
+	unsigned char id_len;
+};
+
 /*
  * This structure defines the management hooks for network devices.
  * The following hooks can be defined; unless noted otherwise, they are
