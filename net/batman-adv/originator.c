@@ -707,9 +707,6 @@ static int batadv_orig_node_add_if(struct batadv_orig_node *orig_node,
 	kfree(orig_node->bcast_own_sum);
 	orig_node->bcast_own_sum = data_ptr;
 
-out:
-	if (hard_iface)
-		batadv_hardif_free_ref(hard_iface);
 	return 0;
 }
 
