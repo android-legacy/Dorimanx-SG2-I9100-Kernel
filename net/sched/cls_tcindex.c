@@ -196,12 +196,6 @@ static const struct nla_policy tcindex_policy[TCA_TCINDEX_MAX + 1] = {
 	[TCA_TCINDEX_CLASSID]		= { .type = NLA_U32 },
 };
 
-static void tcindex_filter_result_init(struct tcindex_filter_result *r)
-{
-	memset(r, 0, sizeof(*r));
-	tcf_exts_init(&r->exts, TCA_TCINDEX_ACT, TCA_TCINDEX_POLICE);
-}
-
 static int
 tcindex_set_parms(struct tcf_proto *tp, unsigned long base, u32 handle,
 		  struct tcindex_data *p, struct tcindex_filter_result *r,
@@ -219,11 +213,12 @@ tcindex_set_parms(struct tcf_proto *tp, unsigned long base, u32 handle,
 		return err;
 
 	memcpy(&cp, p, sizeof(cp));
-	tcindex_filter_result_init(&new_filter_result);
+	memset(&new_filter_result, 0, sizeof(new_filter_result));
 
-	tcindex_filter_result_init(&cr);
 	if (old_r)
-		cr.res = r->res;
+		memcpy(&cr, r, sizeof(cr));
+	else
+		memset(&cr, 0, sizeof(cr));
 
 	if (tb[TCA_TCINDEX_HASH])
 		cp.hash = nla_get_u32(tb[TCA_TCINDEX_HASH]);
@@ -275,14 +270,9 @@ tcindex_set_parms(struct tcf_proto *tp, unsigned long base, u32 handle,
 	err = -ENOMEM;
 	if (!cp.perfect && !cp.h) {
 		if (valid_perfect_hash(&cp)) {
-			int i;
-
 			cp.perfect = kcalloc(cp.hash, sizeof(*r), GFP_KERNEL);
 			if (!cp.perfect)
 				goto errout;
-			for (i = 0; i < cp.hash; i++)
-				tcf_exts_init(&cp.perfect[i].exts, TCA_TCINDEX_ACT,
-					      TCA_TCINDEX_POLICE);
 			balloc = 1;
 		} else {
 			cp.h = kcalloc(cp.hash, sizeof(f), GFP_KERNEL);
@@ -308,17 +298,14 @@ tcindex_set_parms(struct tcf_proto *tp, unsigned long base, u32 handle,
 		tcf_bind_filter(tp, &cr.res, base);
 	}
 
-	if (old_r)
-		tcf_exts_change(tp, &r->exts, &e);
-	else
-		tcf_exts_change(tp, &cr.exts, &e);
+	tcf_exts_change(tp, &cr.exts, &e);
 
 	tcf_tree_lock(tp);
 	if (old_r && old_r != r)
-		tcindex_filter_result_init(old_r);
+		memset(old_r, 0, sizeof(*old_r));
 
 	memcpy(p, &cp, sizeof(cp));
-	r->res = cr.res;
+	memcpy(r, &cr, sizeof(cr));
 
 	if (r == &new_filter_result) {
 		struct tcindex_filter **fp;
