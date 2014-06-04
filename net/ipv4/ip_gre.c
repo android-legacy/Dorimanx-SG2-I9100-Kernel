@@ -1333,17 +1333,7 @@ static void ipgre_dev_free(struct net_device *dev)
 static void ipgre_tunnel_setup(struct net_device *dev)
 {
 	dev->netdev_ops		= &ipgre_netdev_ops;
-	dev->type		= ARPHRD_IPGRE;
-	ip_tunnel_setup(dev, ipgre_net_id);
-}
-
-static void __gre_tunnel_init(struct net_device *dev)
-{
-	struct ip_tunnel *tunnel;
-
-	tunnel = netdev_priv(dev);
-	tunnel->hlen = ip_gre_calc_hlen(tunnel->parms.o_flags);
-	tunnel->parms.iph.protocol = IPPROTO_GRE;
+	dev->destructor 	= ipgre_dev_free;
 
 	dev->type		= ARPHRD_IPGRE;
 	dev->needed_headroom 	= LL_MAX_HEADER + sizeof(struct iphdr) + 4;
@@ -1370,9 +1360,8 @@ static int ipgre_tunnel_init(struct net_device *dev)
 	tunnel->dev = dev;
 	strcpy(tunnel->parms.name, dev->name);
 
-	dev->flags		= IFF_NOARP;
-	dev->priv_flags		&= ~IFF_XMIT_DST_RELEASE;
-	dev->addr_len		= 4;
+	memcpy(dev->dev_addr, &tunnel->parms.iph.saddr, 4);
+	memcpy(dev->broadcast, &tunnel->parms.iph.daddr, 4);
 
 	if (iph->daddr) {
 #ifdef CONFIG_NET_IPGRE_BROADCAST
