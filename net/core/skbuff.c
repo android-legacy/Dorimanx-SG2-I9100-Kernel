@@ -2884,10 +2884,9 @@ int skb_gro_receive(struct sk_buff **head, struct sk_buff *skb)
 	if (p->len + len >= 65536)
 		return -E2BIG;
 
-	lp = NAPI_GRO_CB(p)->last;
-	pinfo = skb_shinfo(lp);
-
-	if (headlen <= offset) {
+	if (pinfo->frag_list)
+		goto merge;
+	else if (headlen <= offset) {
 		skb_frag_t *frag;
 		skb_frag_t *frag2;
 		int i = skbinfo->nr_frags;
@@ -2999,11 +2998,8 @@ merge:
 
 	__skb_pull(skb, offset);
 
-	if (NAPI_GRO_CB(p)->last == p)
-		skb_shinfo(p)->frag_list = skb;
-	else
-		NAPI_GRO_CB(p)->last->next = skb;
-	NAPI_GRO_CB(p)->last = skb;
+	p->prev->next = skb;
+	p->prev = skb;
 	skb_header_release(skb);
 
 done:
