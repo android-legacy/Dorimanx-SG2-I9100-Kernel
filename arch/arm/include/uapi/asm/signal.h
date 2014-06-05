@@ -90,7 +90,7 @@ typedef unsigned long sigset_t;
 #define MINSIGSTKSZ	2048
 #define SIGSTKSZ	8192
 
-#include <asm-generic/signal-defs.h>
+#include <uapi/asm-generic/signal-defs.h>
 
 #ifndef __KERNEL__
 /* Here we must cater to libcs that poke about in kernel headers.  */
