@@ -18,14 +18,7 @@
 enum
 {
 	IPSTATS_MIB_NUM = 0,
-/* frequently written fields in fast path, kept in same cache line */
 	IPSTATS_MIB_INPKTS,			/* InReceives */
-	IPSTATS_MIB_INOCTETS,			/* InOctets */
-	IPSTATS_MIB_INDELIVERS,			/* InDelivers */
-	IPSTATS_MIB_OUTFORWDATAGRAMS,		/* OutForwDatagrams */
-	IPSTATS_MIB_OUTPKTS,			/* OutRequests */
-	IPSTATS_MIB_OUTOCTETS,			/* OutOctets */
-/* other fields */
 	IPSTATS_MIB_INHDRERRORS,		/* InHdrErrors */
 	IPSTATS_MIB_INTOOBIGERRORS,		/* InTooBigErrors */
 	IPSTATS_MIB_INNOROUTES,			/* InNoRoutes */
@@ -33,6 +26,9 @@ enum
 	IPSTATS_MIB_INUNKNOWNPROTOS,		/* InUnknownProtos */
 	IPSTATS_MIB_INTRUNCATEDPKTS,		/* InTruncatedPkts */
 	IPSTATS_MIB_INDISCARDS,			/* InDiscards */
+	IPSTATS_MIB_INDELIVERS,			/* InDelivers */
+	IPSTATS_MIB_OUTFORWDATAGRAMS,		/* OutForwDatagrams */
+	IPSTATS_MIB_OUTPKTS,			/* OutRequests */
 	IPSTATS_MIB_OUTDISCARDS,		/* OutDiscards */
 	IPSTATS_MIB_OUTNOROUTES,		/* OutNoRoutes */
 	IPSTATS_MIB_REASMTIMEOUT,		/* ReasmTimeout */
@@ -46,15 +42,12 @@ enum
 	IPSTATS_MIB_OUTMCASTPKTS,		/* OutMcastPkts */
 	IPSTATS_MIB_INBCASTPKTS,		/* InBcastPkts */
 	IPSTATS_MIB_OUTBCASTPKTS,		/* OutBcastPkts */
+	IPSTATS_MIB_INOCTETS,			/* InOctets */
+	IPSTATS_MIB_OUTOCTETS,			/* OutOctets */
 	IPSTATS_MIB_INMCASTOCTETS,		/* InMcastOctets */
 	IPSTATS_MIB_OUTMCASTOCTETS,		/* OutMcastOctets */
 	IPSTATS_MIB_INBCASTOCTETS,		/* InBcastOctets */
 	IPSTATS_MIB_OUTBCASTOCTETS,		/* OutBcastOctets */
-	IPSTATS_MIB_CSUMERRORS,			/* InCsumErrors */
-	IPSTATS_MIB_NOECTPKTS,			/* InNoECTPkts */
-	IPSTATS_MIB_ECT1PKTS,			/* InECT1Pkts */
-	IPSTATS_MIB_ECT0PKTS,			/* InECT0Pkts */
-	IPSTATS_MIB_CEPKTS,			/* InCEPkts */
 	__IPSTATS_MIB_MAX
 };
 
@@ -92,7 +85,6 @@ enum
 	ICMP_MIB_OUTTIMESTAMPREPS,		/* OutTimestampReps */
 	ICMP_MIB_OUTADDRMASKS,			/* OutAddrMasks */
 	ICMP_MIB_OUTADDRMASKREPS,		/* OutAddrMaskReps */
-	ICMP_MIB_CSUMERRORS,			/* InCsumErrors */
 	__ICMP_MIB_MAX
 };
 
@@ -109,7 +101,6 @@ enum
 	ICMP6_MIB_INERRORS,			/* InErrors */
 	ICMP6_MIB_OUTMSGS,			/* OutMsgs */
 	ICMP6_MIB_OUTERRORS,			/* OutErrors */
-	ICMP6_MIB_CSUMERRORS,			/* InCsumErrors */
 	__ICMP6_MIB_MAX
 };
 
@@ -137,7 +128,6 @@ enum
 	TCP_MIB_RETRANSSEGS,			/* RetransSegs */
 	TCP_MIB_INERRS,				/* InErrs */
 	TCP_MIB_OUTRSTS,			/* OutRsts */
-	TCP_MIB_CSUMERRORS,			/* InCsumErrors */
 	__TCP_MIB_MAX
 };
 
@@ -155,7 +145,6 @@ enum
 	UDP_MIB_OUTDATAGRAMS,			/* OutDatagrams */
 	UDP_MIB_RCVBUFERRORS,			/* RcvbufErrors */
 	UDP_MIB_SNDBUFERRORS,			/* SndbufErrors */
-	UDP_MIB_CSUMERRORS,			/* InCsumErrors */
 	__UDP_MIB_MAX
 };
 
@@ -211,8 +200,6 @@ enum
 	LINUX_MIB_TCPFORWARDRETRANS,		/* TCPForwardRetrans */
 	LINUX_MIB_TCPSLOWSTARTRETRANS,		/* TCPSlowStartRetrans */
 	LINUX_MIB_TCPTIMEOUTS,			/* TCPTimeouts */
-	LINUX_MIB_TCPLOSSPROBES,		/* TCPLossProbes */
-	LINUX_MIB_TCPLOSSPROBERECOVERY,		/* TCPLossProbeRecovery */
 	LINUX_MIB_TCPRENORECOVERYFAIL,		/* TCPRenoRecoveryFail */
 	LINUX_MIB_TCPSACKRECOVERYFAIL,		/* TCPSackRecoveryFail */
 	LINUX_MIB_TCPSCHEDULERFAILED,		/* TCPSchedulerFailed */
@@ -256,9 +243,7 @@ enum
 	LINUX_MIB_TCPFASTOPENPASSIVEFAIL,	/* TCPFastOpenPassiveFail */
 	LINUX_MIB_TCPFASTOPENLISTENOVERFLOW,	/* TCPFastOpenListenOverflow */
 	LINUX_MIB_TCPFASTOPENCOOKIEREQD,	/* TCPFastOpenCookieReqd */
-	LINUX_MIB_TCPSPURIOUS_RTX_HOSTQUEUES, /* TCPSpuriousRtxHostQueues */
-	LINUX_MIB_BUSYPOLLRXPACKETS,		/* BusyPollRxPackets */
-	LINUX_MIB_TCPAUTOCORKING,		/* TCPAutoCorking */
+	LINUX_MIB_LOWLATENCYRXPACKETS,		/* LowLatencyRxPackets */
 	__LINUX_MIB_MAX
 };
 
@@ -292,8 +277,6 @@ enum
 	LINUX_MIB_XFRMOUTPOLDEAD,		/* XfrmOutPolDead */
 	LINUX_MIB_XFRMOUTPOLERROR,		/* XfrmOutPolError */
 	LINUX_MIB_XFRMFWDHDRERROR,		/* XfrmFwdHdrError*/
-	LINUX_MIB_XFRMOUTSTATEINVALID,		/* XfrmOutStateInvalid */
-	LINUX_MIB_XFRMACQUIREERROR,		/* XfrmAcquireError */
 	__LINUX_MIB_XFRMMAX
 };
 

@@ -11,7 +11,6 @@
 #define DEBUGFS_MAGIC          0x64626720
 #define SECURITYFS_MAGIC	0x73636673
 #define SELINUX_MAGIC		0xf97cff8c
-#define SMACK_MAGIC		0x43415d53	/* "SMAC" */
 #define RAMFS_MAGIC		0x858458f6	/* some random number */
 #define TMPFS_MAGIC		0x01021994
 #define HUGETLBFS_MAGIC 	0x958458f6	/* some random number */
@@ -29,21 +28,18 @@
 #define ISOFS_SUPER_MAGIC	0x9660
 #define JFFS2_SUPER_MAGIC	0x72b6
 #define PSTOREFS_MAGIC		0x6165676C
-#define EFIVARFS_MAGIC		0xde5e81e4
-#define HOSTFS_SUPER_MAGIC	0x00c0ffee
 
-#define MINIX_SUPER_MAGIC	0x137F		/* minix v1 fs, 14 char names */
-#define MINIX_SUPER_MAGIC2	0x138F		/* minix v1 fs, 30 char names */
-#define MINIX2_SUPER_MAGIC	0x2468		/* minix v2 fs, 14 char names */
-#define MINIX2_SUPER_MAGIC2	0x2478		/* minix v2 fs, 30 char names */
-#define MINIX3_SUPER_MAGIC	0x4d5a		/* minix v3 fs, 60 char names */
+#define MINIX_SUPER_MAGIC	0x137F		/* original minix fs */
+#define MINIX_SUPER_MAGIC2	0x138F		/* minix fs, 30 char names */
+#define MINIX2_SUPER_MAGIC	0x2468		/* minix V2 fs */
+#define MINIX2_SUPER_MAGIC2	0x2478		/* minix V2 fs, 30 char names */
+#define MINIX3_SUPER_MAGIC	0x4d5a		/* minix V3 fs */
 
 #define MSDOS_SUPER_MAGIC	0x4d44		/* MD */
 #define NCP_SUPER_MAGIC		0x564c		/* Guess, what 0x564c is :-) */
 #define NFS_SUPER_MAGIC		0x6969
 #define OPENPROM_SUPER_MAGIC	0x9fa1
 #define QNX4_SUPER_MAGIC	0x002f		/* qnx4 fs detection */
-#define QNX6_SUPER_MAGIC	0x68191122	/* qnx6 fs detection */
 
 #define REISERFS_SUPER_MAGIC	0x52654973	/* used by gcc */
 					/* used by file system utilities that
