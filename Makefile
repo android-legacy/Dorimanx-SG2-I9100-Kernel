@@ -351,6 +351,16 @@ CHECK		= sparse
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
+LOW_ARM_FLAGS	= -pipe -march=armv7-a -mcpu=cortex-a9 \
+		  -mtune=cortex-a9 -marm -mfpu=neon \
+		  -mfloat-abi=softfp -fno-pic -munaligned-access
+
+MODULES		= -fmodulo-sched -fmodulo-sched-allow-regmoves
+
+#ARM_FLAGS      = -fsingle-precision-constant -ftree-vectorize
+#LOOPS		= -funswitch-loops -fpredictive-commoning
+#LOOPS_4_6	= -floop-strip-mine -floop-block -floop-interchange
+
 CFLAGS_MODULE   =
 AFLAGS_MODULE   =
 LDFLAGS_MODULE  =
