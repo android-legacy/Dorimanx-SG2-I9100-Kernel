@@ -481,7 +481,7 @@ version_h := include/generated/uapi/linux/version.h
 
 no-dot-config-targets := clean mrproper distclean \
 			 cscope gtags TAGS tags help %docs check% coccicheck \
-			 $(version_h) headers_% archscripts \
+			 $(version_h) headers_% \
 			 kernelversion %src-pkg
 
 config-targets := 0
@@ -988,7 +988,7 @@ hdr-inst := -rR -f $(srctree)/scripts/Makefile.headersinst obj
 hdr-dst = $(if $(KBUILD_HEADERS), dst=include/asm-$(hdr-arch), dst=include/asm)
 
 PHONY += __headers
-__headers: $(version_h) scripts_basic asm-generic archscripts FORCE
+__headers: $(version_h) scripts_basic asm-generic FORCE
 	$(Q)$(MAKE) $(build)=scripts build_unifdef
 
 PHONY += headers_install_all
