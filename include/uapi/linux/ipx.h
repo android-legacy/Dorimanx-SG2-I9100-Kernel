@@ -7,7 +7,7 @@
 #define IPX_MTU		576
 
 struct sockaddr_ipx {
-	sa_family_t	sipx_family;
+	__kernel_sa_family_t sipx_family;
 	__be16		sipx_port;
 	__be32		sipx_network;
 	unsigned char 	sipx_node[IPX_NODE_LEN];
@@ -38,7 +38,7 @@ struct ipx_interface_definition {
 #define IPX_FRAME_8022		2
 #define IPX_FRAME_ETHERII	3
 #define IPX_FRAME_8023		4
-/* obsolete token ring was	5 */
+#define IPX_FRAME_TR_8022       5 /* obsolete */
 	unsigned char ipx_special;
 #define IPX_SPECIAL_NONE	0
 #define IPX_PRIMARY		1
