@@ -195,7 +195,7 @@ SUBARCH := $(shell uname -m | sed -e s/i.86/x86/ -e s/x86_64/x86/ \
 # "make" in the configured kernel build directory always uses that.
 # Default value for CROSS_COMPILE is not to prefix executables
 # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
-ARCH		?= arm
+ARCH		?= $(SUBARCH)
 CROSS_COMPILE	?= $(CONFIG_CROSS_COMPILE:"%"=%)
 
 # Architecture as present in compile.h
@@ -244,13 +244,8 @@ CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
 
 HOSTCC       = gcc
 HOSTCXX      = g++
-ifdef CONFIG_CC_OPTIMIZE_ALOT
- HOSTCFLAGS   = -Wall -Wmissing-prototypes -Wstrict-prototypes -O3 -fomit-frame-pointer
- HOSTCXXFLAGS = -O3
-else
- HOSTCFLAGS   = -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer
- HOSTCXXFLAGS = -O2
-endif
+HOSTCFLAGS   = -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer
+HOSTCXXFLAGS = -O2
 
 # Decide whether to build built-in, modular, or both.
 # Normally, just do built-in.
@@ -356,17 +351,6 @@ CHECK		= sparse
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
-
-LOW_ARM_FLAGS	= -pipe -march=armv7-a -mcpu=cortex-a9 \
-		  -mtune=cortex-a9 -marm -mfpu=neon \
-		  -mfloat-abi=softfp -fno-pic -munaligned-access
-
-MODULES		= -fmodulo-sched -fmodulo-sched-allow-regmoves
-
-#ARM_FLAGS      = -fsingle-precision-constant -ftree-vectorize
-#LOOPS		= -funswitch-loops -fpredictive-commoning
-#LOOPS_4_6	= -floop-strip-mine -floop-block -floop-interchange
-
 CFLAGS_MODULE   =
 AFLAGS_MODULE   =
 LDFLAGS_MODULE  =
@@ -374,7 +358,6 @@ CFLAGS_KERNEL	=
 AFLAGS_KERNEL	=
 CFLAGS_GCOV	= -fprofile-arcs -ftest-coverage
 
-KERNEL_MODS	= $(LOW_ARM_FLAGS) $(MODULES)
 
 # Use USERINCLUDE when you must reference the UAPI directories only.
 USERINCLUDE    := \
@@ -399,9 +382,7 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
-		   -fno-delete-null-pointer-checks \
-		   -fno-schedule-insns2 $(KERNEL_MODS)
-
+		   -fno-delete-null-pointer-checks
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
 KBUILD_AFLAGS   := -D__ASSEMBLY__
@@ -481,7 +462,7 @@ version_h := include/generated/uapi/linux/version.h
 
 no-dot-config-targets := clean mrproper distclean \
 			 cscope gtags TAGS tags help %docs check% coccicheck \
-			 $(version_h) headers_% \
+			 $(version_h) headers_% archheaders archscripts \
 			 kernelversion %src-pkg
 
 config-targets := 0
@@ -600,12 +581,8 @@ all: vmlinux
 
 ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS	+= -Os $(call cc-disable-warning,maybe-uninitialized,)
-endif
-ifdef CONFIG_CC_OPTIMIZE_DEFAULT
+else
 KBUILD_CFLAGS	+= -O2
-endif
-ifdef CONFIG_CC_OPTIMIZE_ALOT
-KBUILD_CFLAGS	+= -O3 $(call cc-disable-warning,maybe-uninitialized,)
 endif
 
 include $(srctree)/arch/$(SRCARCH)/Makefile
@@ -618,17 +595,6 @@ ifdef CONFIG_READABLE_ASM
 KBUILD_CFLAGS += $(call cc-option,-fno-reorder-blocks,) \
                  $(call cc-option,-fno-ipa-cp-clone,) \
                  $(call cc-option,-fno-partial-inlining)
-endif
-
-ifdef CONFIG_CC_CHECK_WARNING_STRICTLY
-KBUILD_CFLAGS	+= -fdiagnostics-show-option -Werror \
-		   -Wno-error=unused-function \
-		   -Wno-error=unused-variable \
-		   -Wno-error=unused-value \
-		   -Wno-error=unused-label
-#		   -Wno-error=uninitialized
-#		   -Wno-error=address \
-#		   -Wno-error=enum-compare
 endif
 
 ifneq ($(CONFIG_FRAME_WARN),0)
@@ -659,11 +625,6 @@ KBUILD_CFLAGS += $(stackp-flag)
 # This warning generated too much noise in a regular build.
 # Use make W=1 to enable this warning (see scripts/Makefile.build)
 KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
-#KBUILD_CFLAGS += $(call cc-disable-warning, uninitialized)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-function)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-variable)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-value)
-KBUILD_CFLAGS += $(call cc-disable-warning, unused-label)
 
 ifdef CONFIG_FRAME_POINTER
 KBUILD_CFLAGS	+= -fno-omit-frame-pointer -fno-optimize-sibling-calls
@@ -840,17 +801,12 @@ libs-y		:= $(libs-y1) $(libs-y2)
 # Externally visible symbols (used by link-vmlinux.sh)
 export KBUILD_VMLINUX_INIT := $(head-y) $(init-y)
 export KBUILD_VMLINUX_MAIN := $(core-y) $(libs-y) $(drivers-y) $(net-y)
-export KBUILD_VMLINUX_OBJS := $(vmlinux-all)
 export KBUILD_LDS          := arch/$(SRCARCH)/kernel/vmlinux.lds
 export LDFLAGS_vmlinux
 # used by scripts/pacmage/Makefile
 export KBUILD_ALLDIRS := $(sort $(filter-out arch/%,$(vmlinux-alldirs)) arch Documentation include samples scripts tools virt)
 
 vmlinux-deps := $(KBUILD_LDS) $(KBUILD_VMLINUX_INIT) $(KBUILD_VMLINUX_MAIN)
-
-# Sort exception table at build time
-quiet_cmd_sortextable = SORTEX
-	cmd_sortextable = $(objtree)/scripts/sortextable
 
 # Final link of vmlinux
       cmd_link-vmlinux = $(CONFIG_SHELL) $< $(LD) $(LDFLAGS) $(LDFLAGS_vmlinux)
@@ -884,10 +840,13 @@ PHONY += $(vmlinux-dirs)
 $(vmlinux-dirs): prepare scripts
 	$(Q)$(MAKE) $(build)=$@
 
-# Store (new) KERNELRELASE string in include/config/kernel.release
+define filechk_kernel.release
+	echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree))"
+endef
+
+# Store (new) KERNELRELEASE string in include/config/kernel.release
 include/config/kernel.release: include/config/auto.conf FORCE
-	$(Q)rm -f $@
-	$(Q)echo "$(KERNELVERSION)$$($(CONFIG_SHELL) $(srctree)/scripts/setlocalversion $(srctree))" > $@
+	$(call filechk,kernel.release)
 
 
 # Things we need to do before we recursively start building the kernel
@@ -919,11 +878,10 @@ prepare1: prepare2 $(version_h) include/generated/utsrelease.h \
                    include/config/auto.conf
 	$(cmd_crmodverdir)
 
-archprepare: prepare1 scripts_basic
+archprepare: archheaders archscripts prepare1 scripts_basic
 
 prepare0: archprepare FORCE
 	$(Q)$(MAKE) $(build)=.
-	$(Q)$(MAKE) $(build)=. missing-syscalls
 
 # All the preparing..
 prepare: prepare0
@@ -987,8 +945,14 @@ hdr-inst := -rR -f $(srctree)/scripts/Makefile.headersinst obj
 # If we do an all arch process set dst to asm-$(hdr-arch)
 hdr-dst = $(if $(KBUILD_HEADERS), dst=include/asm-$(hdr-arch), dst=include/asm)
 
+PHONY += archheaders
+archheaders:
+
+PHONY += archscripts
+archscripts:
+
 PHONY += __headers
-__headers: $(version_h) scripts_basic asm-generic FORCE
+__headers: $(version_h) scripts_basic asm-generic archheaders archscripts FORCE
 	$(Q)$(MAKE) $(build)=scripts build_unifdef
 
 PHONY += headers_install_all
@@ -1201,6 +1165,7 @@ help:
 	@echo  '  gtags           - Generate GNU GLOBAL index'
 	@echo  '  kernelrelease	  - Output the release version string'
 	@echo  '  kernelversion	  - Output the version stored in Makefile'
+	@echo  '  image_name	  - Output the image name'
 	@echo  '  headers_install - Install sanitised kernel headers to INSTALL_HDR_PATH'; \
 	 echo  '                    (default: $(INSTALL_HDR_PATH))'; \
 	 echo  ''
@@ -1245,7 +1210,6 @@ help:
 	@echo  '		2: warnings which occur quite often but may still be relevant'
 	@echo  '		3: more obscure warnings, can most likely be ignored'
 	@echo  '		Multiple levels can be combined with W=12 or W=123'
-	@echo  '  make RECORDMCOUNT_WARN=1 [targets] Warn about ignored mcount sections'
 	@echo  ''
 	@echo  'Execute "make" or "make all" to build all targets marked with [*] '
 	@echo  'For further info see the ./README file'
@@ -1396,7 +1360,7 @@ export_report:
 endif #ifeq ($(config-targets),1)
 endif #ifeq ($(mixed-targets),1)
 
-PHONY += checkstack kernelrelease kernelversion
+PHONY += checkstack kernelrelease kernelversion image_name
 
 # UML needs a little special treatment here.  It wants to use the host
 # toolchain, so needs $(SUBARCH) passed to checkstack.pl.  Everyone
@@ -1416,6 +1380,9 @@ kernelrelease:
 
 kernelversion:
 	@echo $(KERNELVERSION)
+
+image_name:
+	@echo $(KBUILD_IMAGE)
 
 # Clear a bunch of variables before executing the submake
 tools/: FORCE
