@@ -19,11 +19,8 @@
 ###############################################################################
 
 # location
-if [ "${1}" != "" ]; then
-	export KERNELDIR=`readlink -f ${1}`;
-else
-	export KERNELDIR=`readlink -f .`;
-fi;
+
+export KERNELDIR=~/jenkins/workspace/kerneli9100/Dorimanx-SG2-I9100-Kernel
 
 export PARENT_DIR=`readlink -f ${KERNELDIR}/..`;
 export INITRAMFS_SOURCE=`readlink -f ${KERNELDIR}/../initramfs3`;
