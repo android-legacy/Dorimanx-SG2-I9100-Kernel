@@ -1612,11 +1612,25 @@ static void serial8250_handle_port(struct uart_8250_port *up)
 
 	DEBUG_INTR("status = %x...", status);
 
-	if (status & (UART_LSR_DR | UART_LSR_BI))
-		receive_chars(up, &status);
-	check_modem_status(up);
-	if (status & UART_LSR_THRE)
-		transmit_chars(up);
+	if (status & (UART_LSR_DR | UART_LSR_BI)) {
+		if (up->dma)
+			dma_err = serial8250_rx_dma(up, iir);
+
+		if (!up->dma || dma_err)
+			status = serial8250_rx_chars(up, status);
+	}
+	serial8250_modem_status(up);
+	if (!up->dma && (status & UART_LSR_THRE))
+		serial8250_tx_chars(up);
+
+	spin_unlock_irqrestore(&port->lock, flags);
+	return 1;
+}
+EXPORT_SYMBOL_GPL(serial8250_handle_irq);
+
+static int serial8250_default_handle_irq(struct uart_port *port)
+{
+	unsigned int iir = serial_port_in(port, UART_IIR);
 
 	spin_unlock_irqrestore(&up->port.lock, flags);
 }
